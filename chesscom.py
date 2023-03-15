@@ -13,11 +13,11 @@ async def main():
 	board = pgn.board()
 
 
-	transport, engine = await chess.engine.popen_uci("E:/Projects/stockfish_15.1_win_x64_avx2/stockfish-windows-2022-x86-64-avx2.exe")
+	transport, engine = await chess.engine.popen_uci("/opt/stockfish_15.1_linux_x64_bmi2/stockfish_15.1_x64_bmi2")
 
 
 	for move in pgn.mainline_moves():
-		info = await engine.analyse(board, chess.engine.Limit(depth=18))
+		info = await engine.analyse(board, chess.engine.Limit(depth=18, time=0.1))
 		print(info["score"])
 
 		board.push(move)

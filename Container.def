@@ -1,0 +1,11 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%post
+	apt-get update && apt-get install -y wget unzip python3 python3-pip
+	mkdir -p /opt/ && cd /opt
+	wget -q https://stockfishchess.org/files/stockfish_15.1_linux_x64_bmi2.zip
+	unzip stockfish_15.1_linux_x64_bmi2.zip
+
+%environment
+	export STOCKFISH=/opt/stockfish_15.1_linux_x64_bmi2/stockfish_15.1_x64_bmi2
