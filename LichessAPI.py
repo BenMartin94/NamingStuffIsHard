@@ -1,5 +1,6 @@
 import requests
 
+
 # read in games from lichess api example is https://lichess.org/api/games/user/NotAHeroinDealer
 # with a query parameter for analyzed = true
 # returns a list of games
