@@ -73,7 +73,7 @@ with open("KaggleData/data.pgn") as file:
 
 		games.append(boards)
 
-		if len(games) < 25000:
+		if len(games) <= 25000:
 			blackElo = int(game.headers["BlackElo"])
 			whiteElo = int(game.headers["WhiteElo"])
 		elos.append([whiteElo, blackElo])
