@@ -37,13 +37,13 @@ ytrain = torch.hstack([white_elo, black_elo]).float()
 
 # parameters for network
 inputSize = 72
-hiddenSize = 50
+hiddenSize = 200
 outputSize = 2
 
 # parameters for training
-lr = 1e-3
-nEpochs = 2
-batchSize = 128
+lr = 1e-4
+nEpochs = 10
+batchSize = 256
 
 # dataloader
 dataset = torch.utils.data.TensorDataset(Xtrain, ytrain)
@@ -52,7 +52,7 @@ loader = torch.utils.data.DataLoader(dataset, batch_size=batchSize)
 class Net(torch.nn.Module):
 	def __init__(self, inputSize, hiddenSize, outputSize):
 		super().__init__()
-		self.rnn = torch.nn.LSTM(inputSize, hiddenSize, hiddenSize, batch_first=True)
+		self.rnn = torch.nn.LSTM(inputSize, hiddenSize, batch_first=True)
 		self.fc1 = torch.nn.Linear(hiddenSize, hiddenSize)
 		self.last = torch.nn.Linear(hiddenSize, outputSize)
 		self.relu = torch.nn.ReLU()
@@ -84,5 +84,6 @@ for epoch in range(nEpochs):
 		optim.step()
 		running_loss += loss.item()
 		
-		print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss:.3f}')
+		if i % 10 == 9:
+			print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss:.3f}')	
 		running_loss = 0.0
