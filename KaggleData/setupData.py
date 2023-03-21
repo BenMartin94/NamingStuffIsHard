@@ -20,4 +20,4 @@ with open("KaggleData/encodedGames.pickle", "rb") as file:
 	df["white_elo"] = elos[:,0]
 	df["black_elo"] = elos[:,1]
 	
-	df.to_pickle("KaggleData/dataframe.pickle")
+	df.to_pickle("KaggleData/dataframe.pickle.zip")
