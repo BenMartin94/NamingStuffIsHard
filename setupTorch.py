@@ -5,7 +5,14 @@ import torch.nn
 import torch.utils.data
 import sys
 
+# device to use
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
+
+# for finding non evaluated moves
 neginf = -sys.maxsize - 1
+
+# number of examples to train with
 N = 5000
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 
@@ -34,7 +41,7 @@ outputSize = 2
 # parameters for training
 lr = 1e-2
 nEpochs = 2
-batchSize = 32
+batchSize = 128
 
 # dataloader
 dataset = torch.utils.data.TensorDataset(Xtrain, ytrain)
@@ -51,7 +58,8 @@ class Net(torch.nn.Module):
 		yn = self.fc(yn[:,-1,:])
 		return yn
 
-net = Net(inputSize, hiddenSize, outputSize)
+net = Net(inputSize, hiddenSize, outputSize).to(device)
+
 criterion = torch.nn.MSELoss()
 optim = torch.optim.SGD(net.parameters(), lr=lr)
 
@@ -59,7 +67,8 @@ optim = torch.optim.SGD(net.parameters(), lr=lr)
 for epoch in range(nEpochs):
 	running_loss = 0.0
 	for i, (data, target) in enumerate(loader):
-		
+		data, target = data.to(device), target.to(device)
+
 		optim.zero_grad()
 
 		outputs = net(data)
