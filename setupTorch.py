@@ -34,6 +34,9 @@ Xtrain = boardTensors.float()
 white_elo = torch.tensor(df["white_elo"][0:N])[:, None]
 black_elo = torch.tensor(df["black_elo"][0:N])[:, None]
 ytrain = torch.hstack([white_elo, black_elo]).float()
+ymean = torch.mean(ytrain, 0, keepdim=True)
+ystd = torch.std(ytrain, 0, keepdim=True)
+ytrain = (ytrain - ymean) / ystd
 
 # parameters for network
 nConv = 4
@@ -41,9 +44,9 @@ hiddenSize = 150
 outputSize = 2
 
 # parameters for training
-lr = 1e-2
+lr = 1e-3
 nEpochs = 10
-batchSize = 32
+batchSize = 16
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
