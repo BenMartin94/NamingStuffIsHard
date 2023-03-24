@@ -6,7 +6,8 @@ import torch.utils.data
 import sys
 
 # device to use
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = 'cpu'
 
 # for finding non evaluated moves
 neginf = -sys.maxsize - 1
@@ -16,19 +17,18 @@ N = 25000
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
+lengths = torch.tensor(list(map(len, boardTensors)))
+
 boardTensors = torch.nn.utils.rnn.pad_sequence(boardTensors, batch_first=True)
 
-moveTensors = list(map(torch.Tensor, df["MoveScores"][0:N]))
-moveTensors = torch.nn.utils.rnn.pad_sequence(moveTensors, batch_first=True)
+# moveTensors = list(map(torch.Tensor, df["MoveScores"][0:N]))
+# moveTensors = torch.nn.utils.rnn.pad_sequence(moveTensors, batch_first=True)
 
-# find missing moves without evaluations, and set to zero padding
-missingMoves = torch.where(moveTensors == neginf)
-moveTensors[missingMoves] = 0
-boardTensors[missingMoves] = 0
+# # find missing moves without evaluations, and set to zero padding
+# missingMoves = torch.where(moveTensors == neginf)
+# moveTensors[missingMoves] = 0
+# boardTensors[missingMoves] = 0
 
-lengths = torch.tensor([t.size()[0] for t in moveTensors])
-
-# Xtrain = torch.nn.utils.rnn.pack_padded_sequence(boardTensors.float(), lengths, batch_first=True, enforce_sorted=False)
 Xtrain = boardTensors.float()
 
 white_elo = torch.tensor(df["white_elo"][0:N])[:, None]
@@ -38,74 +38,98 @@ ymean = torch.mean(ytrain, 0, keepdim=True)
 ystd = torch.std(ytrain, 0, keepdim=True)
 ytrain = (ytrain - ymean) / ystd
 
-# parameters for network
-nConv = 4
-hiddenSize = 150
-outputSize = 2
-
 # parameters for training
-lr = 1e-3
+lr = 1e-5
 nEpochs = 10
-batchSize = 16
+batchSize = 64
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
-	def __init__(self, X, y):
+	def __init__(self, X, y, lengths):
 		super().__init__(X, y)
 		self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
+		self.lengths = lengths
+
+	# for when using convolutional layer
+	# def __getitem__(self, index):
+	# 	data, target = super().__getitem__(index)
+	# 	# process batch into chess boards
+	# 	shape = data.size()
+	# 	# chessBoardTensor = torch.zeros(shape[0], shape[1], 64, 17)
+	# 	chessBoardTensor = torch.zeros(shape[0], 17, 64)
+		
+	# 	# encode each chess piece
+	# 	for i in range(len(self.piecemap)):
+	# 		chessBoardTensor[...,i,:] = data[...,0:64] == self.piecemap[i]
+
+	# 	# 12->encoding of white move or not
+	# 	# 13->white kingside castle
+	# 	# 14->white queenside castle
+	# 	# 15->black kindside castle
+	# 	# 16->black queenside castle
+	# 	chessBoardTensor[...,12:17,:] = data[..., 64:69, None]
+	# 	# 17, 18, 19 -> en passant square, half move clock, full move number
+
+	# 	# return chessBoardTensor.reshape(shape[0], shape[1], 8, 8, 17), target
+	# 	return chessBoardTensor.reshape(shape[0], 17, 8, 8).squeeze(), target.squeeze()
 
 	def __getitem__(self, index):
 		data, target = super().__getitem__(index)
-		# process batch into chess boards
-		shape = data.size()
-		# chessBoardTensor = torch.zeros(shape[0], shape[1], 64, 17)
-		chessBoardTensor = torch.zeros(shape[0], 17, 64)
-		
-		# encode each chess piece
-		for i in range(len(self.piecemap)):
-			chessBoardTensor[...,i,:] = data[...,0:64] == self.piecemap[i]
-
-		# 12->encoding of white move or not
-		# 13->white kingside castle
-		# 14->white queenside castle
-		# 15->black kindside castle
-		# 16->black queenside castle
-		chessBoardTensor[...,12:17,:] = data[..., 64:69, None]
-		# 17, 18, 19 -> en passant square, half move clock, full move number
-
-		# return chessBoardTensor.reshape(shape[0], shape[1], 8, 8, 17), target
-		return chessBoardTensor.reshape(shape[0], 17, 8, 8).squeeze(), target.squeeze()
+		lengths = self.lengths[index]
+		return data, target, lengths 
 	
-dataset = ChessBoardDataset(Xtrain, ytrain)
+dataset = ChessBoardDataset(Xtrain, ytrain, lengths)
+# dataset = torch.utils.data.TensorDataset(Xtrain, ytrain)
 loader = torch.utils.data.DataLoader(dataset, batch_size=batchSize, drop_last=True, num_workers=2)
 
 class Net(torch.nn.Module):
-	def __init__(self, nConv, hiddenSize, outputSize, batchSize, device):
+	def __init__(self, batchSize, device):
 		super().__init__()
-		self.batchSize = batchSize
-		self.inputSize = nConv * 6 * 6
+		# parameters for network
+		self.hiddenSize = 50
+		self.outputSize = 2
 
-		self.conv2 = torch.nn.Conv2d(17, nConv, (3, 3))
-		self.lstm = torch.nn.LSTM(self.inputSize, hiddenSize, batch_first=True)
-		self.last = torch.nn.Linear(hiddenSize, outputSize)
+		self.batchSize = batchSize
+		self.inputSize = 72
+
+		# self.conv2 = torch.nn.Conv2d(17, nConv, (3, 3))
+		self.lstm = torch.nn.LSTM(self.inputSize, self.hiddenSize, batch_first=True)
+		self.last = torch.nn.Linear(self.hiddenSize, self.outputSize)
+
 		self.relu = torch.nn.ReLU()
-		self.h0 = torch.zeros(1, batchSize, hiddenSize).to(device)
-		self.c0 = torch.zeros(1, batchSize, hiddenSize).to(device)
+
+		# self.h0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
+		# self.c0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
 		
-	def forward(self, inputs):
+	def forward(self, inputs, lengths):
 		nSequence = inputs.size()[1]
-		hn = self.h0
-		cn = self.c0
-		for i in range(nSequence):
-			yn = self.conv2(inputs[:,i,...])
-			yn = torch.reshape(yn, (self.batchSize, 1, self.inputSize))
-			yn = self.relu(yn)
-			yn, (hn, cn) = self.lstm(yn, (hn, cn))
+		# hn = self.h0
+		# cn = self.c0
+		# for i in range(nSequence):
+		# 	# yn = self.conv2(inputs[:,i,...])
+		# 	# yn = torch.reshape(yn, (self.batchSize, 1, self.inputSize))
+		# 	# yn = self.tanh(yn)
+		# 	yn = self.fc1(inputs[:, i,...])
+		# 	yn = self.relu(yn)
+		# 	yn = self.fc2(yn)
+		# 	yn = self.relu(yn)
+		# 	yn = torch.reshape(yn, (self.batchSize, 1, self.hiddenSize))
+		# 	yn, (hn, cn) = self.lstm(yn, (hn, cn))
+
+		yn = torch.nn.utils.rnn.pack_padded_sequence(inputs, lengths, batch_first=True, enforce_sorted=False)
+		yn, _ = self.lstm(yn)
+		yn, lens_unpacked = torch.nn.utils.rnn.pad_packed_sequence(yn, batch_first=True)
+		
+		indices = lens_unpacked-1
+		indices = torch.unsqueeze(indices, 1)
+		indices = torch.unsqueeze(indices, 2)
+		indices = torch.repeat_interleave(indices, self.hiddenSize, dim=2)
+		yn = torch.gather(yn, 1, indices).squeeze()
 		yn = self.last(yn)
 		return yn.squeeze()
 	
 
-net = Net(nConv, hiddenSize, outputSize, batchSize, device).to(device)
+net = Net(batchSize, device).to(device)
 
 criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
@@ -114,12 +138,13 @@ optim = torch.optim.Adam(net.parameters(), lr=lr)
 # optimization loop
 for epoch in range(nEpochs):
 	running_loss = 0.0
-	for i, (data, target) in enumerate(loader):
+	for i, (data, target, lengths) in enumerate(loader):
 		data, target = data.to(device), target.to(device)
 
 		optim.zero_grad()
 
-		outputs = net(data)
+		outputs = net(data, lengths)
+		
 		loss = criterion(outputs, target)
 		loss.backward()
 
