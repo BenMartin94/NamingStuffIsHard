@@ -19,12 +19,14 @@ df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
 lengths = torch.tensor(list(map(len, boardTensors)))
 
+maxLength = 100
+minLength = 20
 
 boardTensors = torch.nn.utils.rnn.pad_sequence(boardTensors, batch_first=True)
-arg = torch.nonzero(torch.logical_and(lengths >= 10, lengths < 50), as_tuple=False)
+arg = torch.nonzero(torch.logical_and(lengths >= minLength, lengths < maxLength), as_tuple=False)
 
 # remove sequences of annoying lengths
-boardTensors = boardTensors[arg, 0:50, :].squeeze()
+boardTensors = boardTensors[arg, 0:maxLength, :].squeeze()
 lengths = lengths[arg].squeeze()
 
 print(boardTensors.size())
@@ -42,14 +44,15 @@ Xtrain = boardTensors.float()
 white_elo = torch.tensor(df["white_elo"][0:N])[:, None]
 black_elo = torch.tensor(df["black_elo"][0:N])[:, None]
 ytrain = torch.hstack([white_elo, black_elo]).float()
-ymean = torch.mean(ytrain, 0, keepdim=True)
-ystd = torch.std(ytrain, 0, keepdim=True)
-ytrain = (ytrain - ymean) / ystd
+# ymean = torch.mean(ytrain, 0, keepdim=True)
+# ystd = torch.std(ytrain, 0, keepdim=True)
+# ytrain = (ytrain - ymean) / ystd
+ytrain /= 1000.0
 ytrain = ytrain[arg].squeeze()
 
 # parameters for training
 lr = 1e-3
-nEpochs = 100
+nEpochs = 50
 batchSize = 512
 
 # assumes batch_first=true
@@ -179,6 +182,6 @@ with torch.no_grad():
 		outputs = net(data, lengths)
 		
 		for i in range(len(outputs)):
-			print(f"[{i}] {outputs[i, :]} {target[i,:]}")
+			print(f"[{i}] {1000*outputs[i, :]} {1000*target[i,:]}")
 		break
 	
