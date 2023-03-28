@@ -4,6 +4,8 @@ import torch
 import torch.nn
 import torch.utils.data
 import sys
+import matplotlib.pyplot as plt
+
 
 # device to use
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -53,7 +55,7 @@ ytrain = ytrain[arg].squeeze()
 # parameters for training
 lr = 1e-3
 nEpochs = 50
-batchSize = 512
+batchSize = 32
 validationPercent = 0.1
 
 # assumes batch_first=true
@@ -167,7 +169,8 @@ net = Net(batchSize, device).to(device)
 criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, 0.9)
-
+trainingHistory = []
+validationHistory = []
 # optimization loop
 for epoch in range(nEpochs):
 	print("Beginning Epoch " + str(epoch))
@@ -186,6 +189,7 @@ for epoch in range(nEpochs):
 		running_loss += loss.item()
 		
 	print(f'[{epoch + 1}] loss: {running_loss:.3f}')
+	trainingHistory.append(running_loss)
 
 	validation_loss = 0.0
 	with torch.no_grad():
@@ -196,6 +200,16 @@ for epoch in range(nEpochs):
 			loss = criterion(outputs, target)
 			validation_loss += loss.item()
 		print(f'[{epoch + 1}] validation loss: {validation_loss:.3f}')
+		validationHistory.append(validation_loss)
+
+# now plot the training history as semilog
+plt.semilogy(trainingHistory, label="Training Loss")
+plt.semilogy(validationHistory, label="Validation Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+
+plt.legend()
+plt.show()
 
 torch.save({
             'epoch': nEpochs,
