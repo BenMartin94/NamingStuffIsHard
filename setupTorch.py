@@ -13,7 +13,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 neginf = -sys.maxsize - 1
 
 # number of examples to train with
-N = 25000
+N = 500
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
@@ -106,13 +106,14 @@ class Net(torch.nn.Module):
 		self.outputSize = 2
 
 		self.batchSize = batchSize
-		self.inputSize = 72
+		self.inputSize = 44
 
 		# self.conv2 = torch.nn.Conv2d(17, nConv, (3, 3))
 		self.lstm = torch.nn.LSTM(self.inputSize, self.hiddenSize, batch_first=True)
 		self.fclast = torch.nn.Linear(self.hiddenSize, self.outputSize)
 		self.fc1 = torch.nn.Linear(self.hiddenSize, self.hiddenSize)
 		self.relu = torch.nn.ReLU()
+		self.conv = torch.nn.Conv2d(1, 1, (3, 3))
 
 		# self.h0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
 		# self.c0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
@@ -131,6 +132,18 @@ class Net(torch.nn.Module):
 		# 	yn = self.relu(yn)
 		# 	yn = torch.reshape(yn, (self.batchSize, 1, self.hiddenSize))
 		# 	yn, (hn, cn) = self.lstm(yn, (hn, cn))
+
+		# grab the first 64 elements of the last dim
+		justPos = inputs[..., 0:64]
+		justPos = torch.reshape(justPos, (self.batchSize*nSequence, 1, 8, 8))
+		justPos = self.conv(justPos)
+		# add relu
+		justPos = self.relu(justPos)
+
+		# now reshape just pos back to batch, sequence, 64
+		justPos = torch.reshape(justPos, (self.batchSize, nSequence, 36))
+		# now add on the other elements we lost from before
+		inputs = torch.cat((justPos, inputs[..., 64:]), dim=2)
 
 		yn = torch.nn.utils.rnn.pack_padded_sequence(inputs, lengths, batch_first=True, enforce_sorted=False)
 		yn, _ = self.lstm(yn)
@@ -157,6 +170,7 @@ optim = torch.optim.Adam(net.parameters(), lr=lr)
 
 # optimization loop
 for epoch in range(nEpochs):
+	print("Beginning Epoch " + str(epoch))
 	running_loss = 0.0
 	for i, (data, target, lengths) in enumerate(loader):
 		data, target = data.to(device), target.to(device)
