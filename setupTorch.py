@@ -54,6 +54,7 @@ ytrain = ytrain[arg].squeeze()
 lr = 1e-3
 nEpochs = 50
 batchSize = 512
+validationPercent = 0.1
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
@@ -91,8 +92,11 @@ class ChessBoardDataset(torch.utils.data.TensorDataset):
 		return data, target, lengths 
 	
 dataset = ChessBoardDataset(Xtrain, ytrain, lengths)
+trainData, validationData = torch.utils.data.random_split(dataset, lengths=[1.0 - validationPercent, validationPercent])
+
 # dataset = torch.utils.data.TensorDataset(Xtrain, ytrain)
-loader = torch.utils.data.DataLoader(dataset, batch_size=batchSize, drop_last=True, num_workers=2)
+loader = torch.utils.data.DataLoader(trainData, batch_size=batchSize, drop_last=True, num_workers=2)
+validationLoader = torch.utils.data.DataLoader(validationData, batch_size=batchSize, drop_last=True, num_workers=2)
 
 class Net(torch.nn.Module):
 	def __init__(self, batchSize, device):
@@ -135,7 +139,7 @@ class Net(torch.nn.Module):
 		indices = lens_unpacked-1
 		indices = torch.unsqueeze(indices, 1)
 		indices = torch.unsqueeze(indices, 2)
-		indices = torch.repeat_interleave(indices, self.hiddenSize, dim=2).to(torch.device('cuda'))
+		indices = torch.repeat_interleave(indices, self.hiddenSize, dim=2).to(device)
 		yn = torch.gather(yn, 1, indices).squeeze()
 
 		yn = self.fc1(yn)
@@ -168,6 +172,16 @@ for epoch in range(nEpochs):
 		running_loss += loss.item()
 		
 	print(f'[{epoch + 1}] loss: {running_loss:.3f}')
+
+	validation_loss = 0.0
+	with torch.no_grad():
+		for i, (data, target, lengths) in enumerate(validationLoader):
+			data, target = data.to(device), target.to(device)
+			outputs = net(data, lengths)
+		
+			loss = criterion(outputs, target)
+			validation_loss += loss.item()
+		print(f'[{epoch + 1}] validation loss: {validation_loss:.3f}')
 
 torch.save({
             'epoch': nEpochs,
