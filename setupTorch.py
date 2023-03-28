@@ -6,8 +6,8 @@ import torch.utils.data
 import sys
 
 # device to use
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-device = 'cpu'
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# device = 'cpu'
 
 # for finding non evaluated moves
 neginf = -sys.maxsize - 1
@@ -19,7 +19,15 @@ df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
 lengths = torch.tensor(list(map(len, boardTensors)))
 
+
 boardTensors = torch.nn.utils.rnn.pad_sequence(boardTensors, batch_first=True)
+arg = torch.nonzero(torch.logical_and(lengths >= 10, lengths < 50), as_tuple=False)
+
+# remove sequences of annoying lengths
+boardTensors = boardTensors[arg, 0:50, :].squeeze()
+lengths = lengths[arg].squeeze()
+
+print(boardTensors.size())
 
 # moveTensors = list(map(torch.Tensor, df["MoveScores"][0:N]))
 # moveTensors = torch.nn.utils.rnn.pad_sequence(moveTensors, batch_first=True)
@@ -37,11 +45,12 @@ ytrain = torch.hstack([white_elo, black_elo]).float()
 ymean = torch.mean(ytrain, 0, keepdim=True)
 ystd = torch.std(ytrain, 0, keepdim=True)
 ytrain = (ytrain - ymean) / ystd
+ytrain = ytrain[arg].squeeze()
 
 # parameters for training
-lr = 1e-5
-nEpochs = 10
-batchSize = 64
+lr = 1e-3
+nEpochs = 100
+batchSize = 512
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
@@ -86,7 +95,7 @@ class Net(torch.nn.Module):
 	def __init__(self, batchSize, device):
 		super().__init__()
 		# parameters for network
-		self.hiddenSize = 50
+		self.hiddenSize = 100
 		self.outputSize = 2
 
 		self.batchSize = batchSize
@@ -94,8 +103,8 @@ class Net(torch.nn.Module):
 
 		# self.conv2 = torch.nn.Conv2d(17, nConv, (3, 3))
 		self.lstm = torch.nn.LSTM(self.inputSize, self.hiddenSize, batch_first=True)
-		self.last = torch.nn.Linear(self.hiddenSize, self.outputSize)
-
+		self.fclast = torch.nn.Linear(self.hiddenSize, self.outputSize)
+		self.fc1 = torch.nn.Linear(self.hiddenSize, self.hiddenSize)
 		self.relu = torch.nn.ReLU()
 
 		# self.h0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
@@ -123,9 +132,13 @@ class Net(torch.nn.Module):
 		indices = lens_unpacked-1
 		indices = torch.unsqueeze(indices, 1)
 		indices = torch.unsqueeze(indices, 2)
-		indices = torch.repeat_interleave(indices, self.hiddenSize, dim=2)
+		indices = torch.repeat_interleave(indices, self.hiddenSize, dim=2).to(torch.device('cuda'))
 		yn = torch.gather(yn, 1, indices).squeeze()
-		yn = self.last(yn)
+
+		yn = self.fc1(yn)
+		yn = self.relu(yn)
+		yn = self.fclast(yn)
+
 		return yn.squeeze()
 	
 
@@ -151,12 +164,21 @@ for epoch in range(nEpochs):
 		optim.step()
 		running_loss += loss.item()
 		
-		if i % 10 == 9:
-			print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss:.3f}')
-			for label in range(4):
-				print(f"predict {outputs[label,:]} label {target[label, :]}")
+	print(f'[{epoch + 1}] loss: {running_loss:.3f}')
 
-		running_loss = 0.0
-	# scheduler.step()
-	
+torch.save({
+            'epoch': nEpochs,
+            'model_state_dict': net.state_dict(),
+            'optimizer_state_dict': optim.state_dict(),
+            'loss': running_loss,
+            }, 'model.state')
+
+with torch.no_grad():
+	for i, (data, target, lengths) in enumerate(loader):
+		data, target = data.to(device), target.to(device)
+		outputs = net(data, lengths)
+		
+		for i in range(len(outputs)):
+			print(f"[{i}] {outputs[i, :]} {target[i,:]}")
+		break
 	
