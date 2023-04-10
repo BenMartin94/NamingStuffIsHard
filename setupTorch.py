@@ -55,7 +55,7 @@ ytrain = ytrain[arg].squeeze()
 # parameters for training
 lr = 1e-3
 nEpochs = 10
-batchSize = 256
+batchSize = 512
 validationPercent = 0.1
 
 # assumes batch_first=true
