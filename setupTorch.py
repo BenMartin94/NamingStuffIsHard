@@ -15,7 +15,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 neginf = -sys.maxsize - 1
 
 # number of examples to train with
-N = 500
+N = 25000
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
@@ -54,8 +54,8 @@ ytrain = ytrain[arg].squeeze()
 
 # parameters for training
 lr = 1e-3
-nEpochs = 50
-batchSize = 32
+nEpochs = 10
+batchSize = 256
 validationPercent = 0.1
 
 # assumes batch_first=true
@@ -98,7 +98,7 @@ trainData, validationData = torch.utils.data.random_split(dataset, lengths=[1.0 
 
 # dataset = torch.utils.data.TensorDataset(Xtrain, ytrain)
 loader = torch.utils.data.DataLoader(trainData, batch_size=batchSize, drop_last=True, num_workers=2)
-validationLoader = torch.utils.data.DataLoader(validationData, batch_size=batchSize, drop_last=True, num_workers=2)
+validationLoader = torch.utils.data.DataLoader(validationData, batch_size=batchSize, drop_last=True,)
 
 class Net(torch.nn.Module):
 	def __init__(self, batchSize, device):
@@ -108,42 +108,31 @@ class Net(torch.nn.Module):
 		self.outputSize = 2
 
 		self.batchSize = batchSize
-		self.inputSize = 44
+		self.inputSize = 5*4*4 + 8
 
-		# self.conv2 = torch.nn.Conv2d(17, nConv, (3, 3))
 		self.lstm = torch.nn.LSTM(self.inputSize, self.hiddenSize, batch_first=True)
 		self.fclast = torch.nn.Linear(self.hiddenSize, self.outputSize)
 		self.fc1 = torch.nn.Linear(self.hiddenSize, self.hiddenSize)
 		self.relu = torch.nn.ReLU()
-		self.conv = torch.nn.Conv2d(1, 1, (3, 3))
+		self.conv = torch.nn.Conv2d(1, 4, (3, 3))
+		self.conv2 = torch.nn.Conv2d(4, 5, (3, 3))
 
-		# self.h0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
-		# self.c0 = torch.zeros(1, self.batchSize, self.hiddenSize).to(device)
-		
 	def forward(self, inputs, lengths):
 		nSequence = inputs.size()[1]
-		# hn = self.h0
-		# cn = self.c0
-		# for i in range(nSequence):
-		# 	# yn = self.conv2(inputs[:,i,...])
-		# 	# yn = torch.reshape(yn, (self.batchSize, 1, self.inputSize))
-		# 	# yn = self.tanh(yn)
-		# 	yn = self.fc1(inputs[:, i,...])
-		# 	yn = self.relu(yn)
-		# 	yn = self.fc2(yn)
-		# 	yn = self.relu(yn)
-		# 	yn = torch.reshape(yn, (self.batchSize, 1, self.hiddenSize))
-		# 	yn, (hn, cn) = self.lstm(yn, (hn, cn))
 
 		# grab the first 64 elements of the last dim
 		justPos = inputs[..., 0:64]
+		# print(justPos.size())
 		justPos = torch.reshape(justPos, (self.batchSize*nSequence, 1, 8, 8))
 		justPos = self.conv(justPos)
 		# add relu
 		justPos = self.relu(justPos)
 
+		justPos = self.conv2(justPos)
+		justPos = self.relu(justPos)
+
 		# now reshape just pos back to batch, sequence, 64
-		justPos = torch.reshape(justPos, (self.batchSize, nSequence, 36))
+		justPos = torch.reshape(justPos, (self.batchSize, nSequence, 5*4*4))
 		# now add on the other elements we lost from before
 		inputs = torch.cat((justPos, inputs[..., 64:]), dim=2)
 
@@ -209,7 +198,7 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss")
 
 plt.legend()
-plt.show()
+plt.savefig('train.png')
 
 torch.save({
             'epoch': nEpochs,
@@ -218,12 +207,32 @@ torch.save({
             'loss': running_loss,
             }, 'model.state')
 
+black = []
+white = []
+
 with torch.no_grad():
-	for i, (data, target, lengths) in enumerate(loader):
+	for i, (data, target, lengths) in enumerate(validationLoader):
 		data, target = data.to(device), target.to(device)
 		outputs = net(data, lengths)
-		
-		for i in range(len(outputs)):
-			print(f"[{i}] {1000*outputs[i, :]} {1000*target[i,:]}")
-		break
+
+		errors = (outputs - target)**2
+		black.extend(errors[:,1])
+		white.extend(errors[:,0])
+
+white = torch.tensor(white)
+black = torch.tensor(black)
+maxWhite = torch.max(white)
+maxBlack = torch.max(black)
+
+white /= maxWhite
+black /= maxBlack
+
+plt.figure()
+plt.hist(white.cpu(), bins=100)
+plt.savefig("white.png")
+
+plt.figure()
+plt.hist(black.cpu(), bins=100)
+plt.savefig("black.png")
+
 	
