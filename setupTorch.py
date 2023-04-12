@@ -5,7 +5,7 @@ import torch.nn
 import torch.utils.data
 import sys
 import matplotlib.pyplot as plt
-
+from scipy.integrate import trapezoid
 
 # device to use
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -21,11 +21,11 @@ df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
 lengths = torch.tensor(list(map(len, boardTensors)))
 
-maxLength = 100
-minLength = 20
+maxLength = 1000
+minLength = 8
 
 boardTensors = torch.nn.utils.rnn.pad_sequence(boardTensors, batch_first=True)
-arg = torch.nonzero(torch.logical_and(lengths >= minLength, lengths < maxLength), as_tuple=False)
+arg = torch.nonzero(torch.logical_and(lengths >= minLength, lengths <= maxLength), as_tuple=False)
 
 # remove sequences of annoying lengths
 boardTensors = boardTensors[arg, 0:maxLength, :].squeeze()
@@ -46,16 +46,16 @@ Xtrain = boardTensors.float()
 white_elo = torch.tensor(df["white_elo"][0:N])[:, None]
 black_elo = torch.tensor(df["black_elo"][0:N])[:, None]
 ytrain = torch.hstack([white_elo, black_elo]).float()
-# ymean = torch.mean(ytrain, 0, keepdim=True)
-# ystd = torch.std(ytrain, 0, keepdim=True)
-# ytrain = (ytrain - ymean) / ystd
-ytrain /= 1000.0
+ymean = torch.mean(ytrain, 0, keepdim=True)
+ystd = torch.std(ytrain, 0, keepdim=True)
+ytrain = (ytrain - ymean) / ystd
+# ytrain /= 1000.0
 ytrain = ytrain[arg].squeeze()
 
 # parameters for training
 lr = 1e-3
-nEpochs = 10
-batchSize = 512
+nEpochs = 5
+batchSize = 64
 validationPercent = 0.1
 
 # assumes batch_first=true
@@ -108,35 +108,48 @@ class Net(torch.nn.Module):
 		self.outputSize = 2
 
 		self.batchSize = batchSize
-		self.inputSize = 5*4*4 + 8
+		self.inputSize = 100
 
+		self.features = torch.nn.Sequential(
+			torch.nn.Linear(72, self.hiddenSize),
+			torch.nn.ReLU(True),
+			torch.nn.Linear(self.hiddenSize, self.hiddenSize),
+			torch.nn.ReLU(True)
+		)
 		self.lstm = torch.nn.LSTM(self.inputSize, self.hiddenSize, batch_first=True)
-		self.fclast = torch.nn.Linear(self.hiddenSize, self.outputSize)
-		self.fc1 = torch.nn.Linear(self.hiddenSize, self.hiddenSize)
-		self.relu = torch.nn.ReLU()
-		self.conv = torch.nn.Conv2d(1, 4, (3, 3))
-		self.conv2 = torch.nn.Conv2d(4, 5, (3, 3))
+
+		self.last = torch.nn.Sequential(
+			torch.nn.Linear(self.hiddenSize, self.hiddenSize),
+			torch.nn.ReLU(True),
+			torch.nn.Linear(self.hiddenSize, self.outputSize)
+		)
+		# self.conv = torch.nn.Conv2d(1, 4, (3, 3))
+		# self.conv2 = torch.nn.Conv2d(4, 5, (3, 3))
 
 	def forward(self, inputs, lengths):
 		nSequence = inputs.size()[1]
 
 		# grab the first 64 elements of the last dim
-		justPos = inputs[..., 0:64]
-		# print(justPos.size())
-		justPos = torch.reshape(justPos, (self.batchSize*nSequence, 1, 8, 8))
-		justPos = self.conv(justPos)
-		# add relu
-		justPos = self.relu(justPos)
+		# justPos = inputs[..., 0:64]
+		# # print(justPos.size())
+		# justPos = torch.reshape(justPos, (self.batchSize*nSequence, 1, 8, 8))
+		# # justPos = self.conv(justPos)
+		# # # add relu
+		# # justPos = self.relu(justPos)
+	
+		# justPos = self.conv2(justPos)
+		# justPos = self.relu(justPos)
 
-		justPos = self.conv2(justPos)
-		justPos = self.relu(justPos)
-
+		x = torch.reshape(inputs, (self.batchSize*nSequence, 72))
+		x = self.features(x)
+		x = torch.reshape(x, (self.batchSize, nSequence, self.hiddenSize))
+		
 		# now reshape just pos back to batch, sequence, 64
-		justPos = torch.reshape(justPos, (self.batchSize, nSequence, 5*4*4))
+		# justPos = torch.reshape(justPos, (self.batchSize, nSequence, 5*4*4))
 		# now add on the other elements we lost from before
-		inputs = torch.cat((justPos, inputs[..., 64:]), dim=2)
+		# inputs = torch.cat((justPos, inputs[..., 64:]), dim=2)
 
-		yn = torch.nn.utils.rnn.pack_padded_sequence(inputs, lengths, batch_first=True, enforce_sorted=False)
+		yn = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
 		yn, _ = self.lstm(yn)
 		yn, lens_unpacked = torch.nn.utils.rnn.pad_packed_sequence(yn, batch_first=True)
 		
@@ -146,18 +159,18 @@ class Net(torch.nn.Module):
 		indices = torch.repeat_interleave(indices, self.hiddenSize, dim=2).to(device)
 		yn = torch.gather(yn, 1, indices).squeeze()
 
-		yn = self.fc1(yn)
-		yn = self.relu(yn)
-		yn = self.fclast(yn)
-
+		yn = self.last(yn)
 		return yn.squeeze()
 	
 
 net = Net(batchSize, device).to(device)
 
-criterion = torch.nn.MSELoss()
+criterion = torch.nn.L1Loss()
+testLoss = torch.nn.L1Loss(reduction='none')
+# optim = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, 0.9)
+
 trainingHistory = []
 validationHistory = []
 # optimization loop
@@ -210,29 +223,74 @@ torch.save({
 black = []
 white = []
 
+blackAvg = []
+whiteAvg = []
+
+avg = torch.mean(ytrain, dim=0).to(device)
+
 with torch.no_grad():
 	for i, (data, target, lengths) in enumerate(validationLoader):
 		data, target = data.to(device), target.to(device)
 		outputs = net(data, lengths)
 
-		errors = (outputs - target)**2
+		
+		errors = testLoss(outputs, target)
+
 		black.extend(errors[:,1])
 		white.extend(errors[:,0])
 
+		avgErrors = testLoss(avg[None, :], target)
+		blackAvg.extend(avgErrors[:,1])
+		whiteAvg.extend(avgErrors[:,0])
+
 white = torch.tensor(white)
 black = torch.tensor(black)
-maxWhite = torch.max(white)
-maxBlack = torch.max(black)
 
-white /= maxWhite
-black /= maxBlack
+whiteAvg = torch.tensor(whiteAvg)
+blackAvg = torch.tensor(blackAvg)
+
+whiteMax = torch.max(white)
+blackMax = torch.max(black)
+
+whiteAvgMax = torch.max(whiteAvg)
+blackAvgMax = torch.max(blackAvg)
+
+whiteMax = torch.max(whiteMax, whiteAvgMax)
+blackMax = torch.max(blackMax, blackAvgMax)
+
+white /= whiteMax
+black /= blackMax
+
+whiteAvg /= whiteMax
+blackAvg /= blackMax
+
+steps = torch.linspace(0, 1.0, 100)
+total = white.size()[0]
+whiteCounts = [torch.count_nonzero(white <= tol) / total for tol in steps]
+blackCounts = [torch.count_nonzero(black <= tol) / total for tol in steps]
+
+whiteAvgCounts = [torch.count_nonzero(whiteAvg <= tol) / total for tol in steps]
+blackAvgCounts = [torch.count_nonzero(blackAvg <= tol) / total for tol in steps]
+
+whiteArea = trapezoid(whiteCounts, steps)
+blackArea = trapezoid(blackCounts, steps)
+
+print(f"white area: {whiteArea} black area: {blackArea}")
 
 plt.figure()
-plt.hist(white.cpu(), bins=100)
+plt.plot(steps, whiteCounts, '-')
+plt.plot(steps, whiteAvgCounts, '-.')
+plt.xlabel("Normalized Error")
+plt.ylabel("Percentage of Examples Less than Normalized Error")
+plt.title("White Elo")
 plt.savefig("white.png")
 
 plt.figure()
-plt.hist(black.cpu(), bins=100)
+plt.plot(steps, blackCounts, '-')
+plt.plot(steps, blackAvgCounts, '-.')
+plt.xlabel("Normalized Error")
+plt.ylabel("Percentage of Examples Less than Normalized Error")
+plt.title("Black Elo")
 plt.savefig("black.png")
 
 	
