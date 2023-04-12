@@ -12,6 +12,7 @@ from IPython.core.display import SVG
 from IPython.core.display_functions import display
 from KaggleData.processKaggleData import decodeBoard
 from tqdm.auto import tqdm
+import random
 
 import cairosvg
 import imageio.v2 as imageio
@@ -123,22 +124,23 @@ class DDPM(torch.nn.Module):
 class UNet(torch.nn.Module):
     def __init__(self, n_steps=500, time_emb_dim=100):
         super(UNet, self).__init__()
+        self.actv = torch.nn.SiLU()
 
         # Sinusoidal embedding
         self.time_embed = torch.nn.Embedding(n_steps, time_emb_dim)
         self.time_embed.weight.data = sinusoidal_embedding(n_steps, time_emb_dim)
         self.time_embed.requires_grad_(False)
-
+        self.inConv = torch.nn.Conv2d(1, 16, 7, padding='same')
         # down layer blocks
         self.te1 = self._make_te(time_emb_dim, 1)
-        self.down1 = self._make_conv_down(1, 32)
+        self.down1 = self._make_conv_down(16, 32)
         self.te2 = self._make_te(time_emb_dim, 32)
         self.down2 = self._make_conv_down(32, 64)
         # bottleneck
         self.te3 = self._make_te(time_emb_dim, 64)
         self.bottleneck = torch.nn.Sequential(
             torch.nn.Conv2d(64, 64, 3, padding=1),
-            torch.nn.SiLU(),
+            self.actv,
             torch.nn.Conv2d(64, 64, 3, padding=1)
         )
         # up layer blocks
@@ -147,7 +149,6 @@ class UNet(torch.nn.Module):
         self.lateral1 = self._make_conv_only(64, 32)
         self.te5 = self._make_te(time_emb_dim, 32)
         self.up2 = self._make_conv_up(32, 1)
-        self.actv = torch.nn.SiLU()
 
         self.dense = torch.nn.Linear(72, 72)
 
@@ -157,7 +158,9 @@ class UNet(torch.nn.Module):
         pieces = x[:, 0:64].reshape(batch_size, 1, 8, 8)
         extra = x[:, 64:72]
         t = self.time_embed(t)
-        out1 = self.down1(pieces + self.te1(t).reshape(batch_size, -1, 1, 1))
+        out0 = self.inConv(pieces)
+        out0 = self.actv(out0)
+        out1 = self.down1(out0 + self.te1(t).reshape(batch_size, -1, 1, 1))
         out2 = self.down2(out1 + self.te2(t).reshape(batch_size, -1, 1, 1))
         out3 = self.bottleneck(out2 + self.te3(t).reshape(batch_size, -1, 1, 1))
 
@@ -168,7 +171,7 @@ class UNet(torch.nn.Module):
         up2 = self.up2(out4 + self.te5(t).reshape(batch_size, -1, 1, 1))
         # now flatted back to 64
         up2 = up2.reshape(batch_size, 64)
-        up2 = self.actv(up2)
+        #up2 = self.actv(up2)
         up2 = torch.cat((up2, extra), dim=1)
         up2 = self.dense(up2)
         return up2
@@ -176,14 +179,14 @@ class UNet(torch.nn.Module):
     def _make_te(self, dim_in, dim_out):
         return torch.nn.Sequential(
             torch.nn.Linear(dim_in, dim_out),
-            torch.nn.SiLU(),
+            self.actv,
             torch.nn.Linear(dim_out, dim_out)
         )
 
     def _make_conv_down(self, dim_in, dim_out):
         return torch.nn.Sequential(
             torch.nn.Conv2d(dim_in, dim_out, 3, padding=1),
-            torch.nn.SiLU(),
+            self.actv,
             torch.nn.Conv2d(dim_out, dim_out, 3, padding=1),
             torch.nn.MaxPool2d(2)
         )
@@ -191,14 +194,14 @@ class UNet(torch.nn.Module):
     def _make_conv_up(self, dim_in, dim_out):
         return torch.nn.Sequential(
             torch.nn.ConvTranspose2d(dim_in, dim_out, 4, stride=2, padding=1),
-            torch.nn.SiLU(),
+            self.actv,
 
         )
 
     def _make_conv_only(self, dim_in, dim_out):
         return torch.nn.Sequential(
             torch.nn.Conv2d(dim_in, dim_out, 3, padding=1),
-            torch.nn.SiLU(),
+            self.actv,
         )
 
 
@@ -206,12 +209,14 @@ class UNet(torch.nn.Module):
 if __name__ == "__main__":
     # for finding non evaluated moves
     neginf = -sys.maxsize - 1
-    epochs = 100
+    epochs = 50
     loadModel = False
+    modelName = "LateGame.pth"
     batch_size = 64
     # number of examples to train with
-    gamesToGrab = 50000
+    gamesToGrab = 5000
     positionsPerGame = 2
+
 
     df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 
@@ -223,7 +228,9 @@ if __name__ == "__main__":
         game = gameTensors[i]
         numMoves = game.size()[0]
         for j in range(positionsPerGame):
-            moveToSel = np.random.randint(0, numMoves, 1)
+            #moveToSel = np.random.randint(0, numMoves, 1)
+            biggerVal=random.randint(0, (numMoves-1)**4)
+            moveToSel = int(round((biggerVal)**0.25))
             boardPos.append(game[moveToSel, :].squeeze())
 
     N = len(boardPos)
@@ -246,7 +253,7 @@ if __name__ == "__main__":
     trainDL = torch.utils.data.DataLoader(trainDS, batch_size=batch_size, shuffle=True)
 
     if loadModel:
-        ddpm = torch.load("ddpm.pth")
+        ddpm = torch.load(modelName)
     else:
 
         # training loop
@@ -270,7 +277,7 @@ if __name__ == "__main__":
                 optimizer.step()
                 epoch_loss += loss.item() * len(x0) / len(trainDS)
             print(f"Epoch {epoch + 1}/{epochs} loss: {epoch_loss}")
-        torch.save(ddpm, "ddpm.pth")
+        torch.save(ddpm, modelName)
     # lets test out the noising
 
     with torch.no_grad():
@@ -288,7 +295,7 @@ if __name__ == "__main__":
             board = board.unsqueeze(0)
             board = decodeBoard(board)
 
-            hmm = chess.svg.board(board=board, size=400)
+            hmm = chess.svg.board(board=board, size=600)
             # write this to a file
             with open("./GeneratedBoards/boardFromNoise%d.svg" % i, 'w') as f:
                 f.write(hmm)
@@ -296,14 +303,23 @@ if __name__ == "__main__":
         # now lets create some new boards from an existing sample
         for i in range(10):
             board = testBoardTensors[i:i+1, :]
+            # lets store the starting board as well
+            boardStored = board * std + mean
+            boardStored = torch.round(boardStored, decimals=0)
+            boardStored = decodeBoard(boardStored)
+            hmm = chess.svg.board(board=boardStored, size=600)
+            # write this to a file
+            with open("./GeneratedBoards/boardReal%d.svg" % i, 'w') as f:
+                f.write(hmm)
+
             # make a long 1x1 tensor of 10
-            t = torch.zeros(1, 1, dtype=torch.long).to(device) + 10
+            t = torch.zeros(1, 1, dtype=torch.long).to(device) + 50
             board = ddpm.createFromReal(board, t)
             # reverse the z score on the fake
             board = board * std + mean
             board = torch.round(board, decimals=0)
             board = decodeBoard(board)
-            hmm = chess.svg.board(board=board, size=400)
+            hmm = chess.svg.board(board=board, size=600)
             # write this to a file
             with open("./GeneratedBoards/boardFromReal%d.svg" % i, 'w') as f:
                 f.write(hmm)
