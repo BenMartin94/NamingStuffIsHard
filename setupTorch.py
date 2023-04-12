@@ -21,6 +21,9 @@ df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
 lengths = torch.tensor(list(map(len, boardTensors)))
 
+moveTensors = list(map(torch.Tensor, df["MoveScores"][0:N]))
+
+exit()
 maxLength = 1000
 minLength = 8
 
