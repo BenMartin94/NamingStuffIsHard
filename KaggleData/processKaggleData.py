@@ -1,3 +1,5 @@
+import torch
+
 import chess
 import chess.pgn
 import pickle
@@ -55,33 +57,59 @@ def encodeBoard(board):
 	encoding.append(board.fullmove_number)
 	return encoding
 
-games = []
-elos = []
-limit = 50000
-with open("KaggleData/data.pgn") as file:
-	game = chess.pgn.read_game(file)
+def decodeBoard(boardArray):
+	# board array is the 1x72 encoding now lets convert it to a board
+	board = chess.Board()
+	for i in range(64):
+		piece = boardArray[0,i]
+		maxPiece = max(piece_codes.values())
+		minPiece = min(piece_codes.values())
+		if maxPiece >= piece >= minPiece:
+			square = chess.square_name(i)
+			# get the key that matches piece value
+			if piece > 0:
+				piece = chess.Piece(piece, chess.WHITE)
+			else:
+				piece = chess.Piece(abs(piece), chess.BLACK)
+			board.set_piece_at(i, piece)
 
-	
-	while game != None:
-		board = chess.Board()
-		boards = []
+	# white or black move
+	return board
 
-		for move in game.mainline_moves():
-			board.push(move)
-			vec = encodeBoard(board)
-			boards.append(vec)
 
-		games.append(boards)
 
-		if len(games) <= 25000:
-			blackElo = int(game.headers["BlackElo"])
-			whiteElo = int(game.headers["WhiteElo"])
-		elos.append([whiteElo, blackElo])
 
-		if len(games) == limit:
-			break
+
+if __name__ == "__main__":
+
+	games = []
+	elos = []
+	limit = 50000
+	with open("./data.pgn") as file:
 		game = chess.pgn.read_game(file)
 
-with open("KaggleData/encodedGames.pickle", "wb") as file:
-	pickle.dump(games, file)
-	pickle.dump(elos, file)
+
+		while game != None:
+			board = chess.Board()
+			boards = []
+
+			for move in game.mainline_moves():
+				board.push(move)
+				vec = encodeBoard(board)
+				boards.append(vec)
+
+			games.append(boards)
+
+			if len(games) <= 25000:
+				blackElo = int(game.headers["BlackElo"])
+				whiteElo = int(game.headers["WhiteElo"])
+			elos.append([whiteElo, blackElo])
+
+			if len(games) == limit:
+				break
+			game = chess.pgn.read_game(file)
+
+
+	with open("./encodedGames.pickle", "wb") as file:
+		pickle.dump(games, file)
+		pickle.dump(elos, file)
