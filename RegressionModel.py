@@ -54,20 +54,20 @@ class SequenceDataset(torch.utils.data.TensorDataset):
 class EloPredictionNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.hidden_size = 50
+        self.hidden_size = 384
         self.num_layers = 1
 
         self.features = torch.nn.Sequential(
-            torch.nn.Conv2d(18, 96, (5,5), stride=1, padding=1),
-            torch.nn.ReLU(True),
+            torch.nn.Conv2d(18, 64, (3,3), stride=1, dilation=2),
+            torch.nn.Tanh(),
+            torch.nn.BatchNorm2d(64),
+            torch.nn.Conv2d(64, 96, (3,3), stride=1),
+            torch.nn.Tanh(),
             torch.nn.BatchNorm2d(96),
-            torch.nn.Conv2d(96, 256, (5,5), stride=1),
-            torch.nn.ReLU(True),
-            torch.nn.BatchNorm2d(256),
         )
 
         self.rnn = torch.nn.LSTM(
-            input_size=256*2*2, 
+            input_size=384, 
             hidden_size=self.hidden_size, 
             num_layers=self.num_layers, 
             batch_first=True,
@@ -75,9 +75,7 @@ class EloPredictionNet(torch.nn.Module):
 
         self.eloScorer = torch.nn.Sequential(
             torch.nn.Linear(2*self.hidden_size,  self.hidden_size),
-            torch.nn.ReLU(),
-            torch.nn.Linear(self.hidden_size,  self.hidden_size),
-            torch.nn.ReLU(),
+            torch.nn.Tanh(),
             torch.nn.Linear(self.hidden_size, 2),
         )
 
@@ -122,9 +120,9 @@ neginf = -sys.maxsize - 1
 # training parameters
 N = 25000
 validationPercent = 0.05
-batchSize = 2048
-lr = 5e-5
-nEpochs = 50
+batchSize = 1024
+lr = 1e-5
+nEpochs = 200
 
 # load in data
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
@@ -184,6 +182,9 @@ criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 # scheduler = torch.optim.lr_scheduler.StepLR(optim, 10, 0.9, verbose=True)
 
+bestLoss = float('inf')
+PATH = "./convolutionalNetWeights.chk"
+
 for epoch in range(nEpochs):
     epochLoss = 0.0
     net.train()
@@ -214,6 +215,16 @@ for epoch in range(nEpochs):
 
     print(f"[{epoch + 1}] loss: {epochLoss:.3e} validation loss: {validationLoss:.3e}")
     # scheduler.step()
+
+    if validationLoss < bestLoss:
+        bestLoss = validationLoss
+        
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': net.state_dict(),
+            'optimizer_state_dict': optim.state_dict(),
+            'loss': epochLoss,
+            }, PATH)
 
 
 # test model
