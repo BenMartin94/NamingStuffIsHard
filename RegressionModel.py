@@ -123,6 +123,7 @@ validationPercent = 0.05
 batchSize = 1024
 lr = 1e-5
 nEpochs = 200
+trainModel = False
 
 # load in data
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
@@ -185,47 +186,55 @@ optim = torch.optim.Adam(net.parameters(), lr=lr)
 bestLoss = float('inf')
 PATH = "./convolutionalNetWeights.chk"
 
-for epoch in range(nEpochs):
-    epochLoss = 0.0
-    net.train()
-    for i, (data, target, lengths) in enumerate(trainLoader):
-        data, target = data.to(device), target.to(device)
+if trainModel:
+	for epoch in range(nEpochs):
+		epochLoss = 0.0
+		net.train()
+		for i, (data, target, lengths) in enumerate(trainLoader):
+			data, target = data.to(device), target.to(device)
 
-        optim.zero_grad()
+			optim.zero_grad()
 
-        outputs = net.forward(data, lengths)
+			outputs = net.forward(data, lengths)
 
-        loss = criterion(outputs, target)
-        loss.backward()
+			loss = criterion(outputs, target)
+			loss.backward()
 
-        optim.step()
-        epochLoss += loss.item()
+			optim.step()
+			epochLoss += loss.item()
 
-    # validate
-    validationLoss = 0.0
-    
+		# validate
+		validationLoss = 0.0
+		
+		net.eval()
+		for i, (data, target, lengths) in enumerate(validationLoader):
+			data, target = data.to(device), target.to(device)
+
+			outputs = net.forward(data, lengths)
+
+			loss = criterion(outputs, target)
+			validationLoss += loss.item()
+
+		print(f"[{epoch + 1}] loss: {epochLoss:.3e} validation loss: {validationLoss:.3e}")
+		# scheduler.step()
+
+		if validationLoss < bestLoss:
+			bestLoss = validationLoss
+			
+			torch.save({
+				'epoch': epoch,
+				'model_state_dict': net.state_dict(),
+				'optimizer_state_dict': optim.state_dict(),
+				'loss': epochLoss,
+				}, PATH)
+else:
+    checkpoint = torch.load(PATH)
+    net.load_state_dict(checkpoint['model_state_dict'])
+    optim.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    loss = checkpoint['loss']
+    print(f"Loaded model parameters of with loss: {loss} at epoch: {epoch}")
     net.eval()
-    for i, (data, target, lengths) in enumerate(validationLoader):
-        data, target = data.to(device), target.to(device)
-
-        outputs = net.forward(data, lengths)
-
-        loss = criterion(outputs, target)
-        validationLoss += loss.item()
-
-    print(f"[{epoch + 1}] loss: {epochLoss:.3e} validation loss: {validationLoss:.3e}")
-    # scheduler.step()
-
-    if validationLoss < bestLoss:
-        bestLoss = validationLoss
-        
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': net.state_dict(),
-            'optimizer_state_dict': optim.state_dict(),
-            'loss': epochLoss,
-            }, PATH)
-
 
 # test model
 black = []
