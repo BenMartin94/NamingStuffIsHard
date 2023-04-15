@@ -52,64 +52,97 @@ class SequenceDataset(torch.utils.data.TensorDataset):
         return len(self.lengths)
 
 class EloPredictionNet(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, maxlen):
         super().__init__()
-        self.hidden_size = 384
+        self.hidden_size = 128
         self.num_layers = 1
+        self.maxlen = maxlen
+	
+        # self.features1 = torch.nn.Sequential(
+        #     torch.nn.Conv2d(18, 64, (3,3)),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Conv2d(64, 64, (3,3)),
+        #     torch.nn.ReLU(),
+        # )
+        
+        # self.features2 = torch.nn.Sequential(
+        #     torch.nn.Conv2d(64, 64, (3,3), padding=1),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Conv2d(64, 64, (3,3), padding=1),
+        #     torch.nn.ReLU(),
+        # )
 
-        self.features = torch.nn.Sequential(
-            torch.nn.Conv2d(18, 64, (3,3), stride=1, dilation=2),
-            torch.nn.Tanh(),
-            torch.nn.BatchNorm2d(64),
-            torch.nn.Conv2d(64, 96, (3,3), stride=1),
-            torch.nn.Tanh(),
-            torch.nn.BatchNorm2d(96),
+        self.fcFeatures = torch.nn.Sequential(
+			torch.nn.Linear(73, self.hidden_size),
+            torch.nn.ReLU(True),
+            torch.nn.BatchNorm1d(self.hidden_size),
         )
 
         self.rnn = torch.nn.LSTM(
-            input_size=384, 
+            input_size=self.hidden_size, 
             hidden_size=self.hidden_size, 
             num_layers=self.num_layers, 
             batch_first=True,
         )
+        
+        self.attention = torch.nn.Sequential(
+			torch.nn.Conv1d(self.maxlen, 10, 1, bias=False),
+			torch.nn.Tanh(),
+            torch.nn.BatchNorm1d(10),
+            torch.nn.Conv1d(10, 1, 1),
+			torch.nn.Tanh(),
+            torch.nn.BatchNorm1d(1),
+		)
 
         self.eloScorer = torch.nn.Sequential(
             torch.nn.Linear(2*self.hidden_size,  self.hidden_size),
-            torch.nn.Tanh(),
+            torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(self.hidden_size),
             torch.nn.Linear(self.hidden_size, 2),
         )
 
     def forward(self, yn, lengths):
         # store original shape
         shape = yn.size()
+        batch = shape[0]
+        seq = shape[1]
         
         # flatten batch and sequence for conv2d
-        yn = torch.flatten(yn, start_dim=0, end_dim=1)
-        yn = self.features(yn)
+        # yn = torch.flatten(yn, start_dim=0, end_dim=1)
+        # yn = yn.view(batch*seq, -1, 8, 8)
+        # yn = self.features1(yn)
+        
+        # yn = yn + self.features2(yn)
+		
+        yn = yn.view(batch*seq, -1)
+        yn = self.fcFeatures(yn)
+        yn = yn.view(batch, seq, -1)
         
 		# unflatten
-        yn = torch.unflatten(yn, 0, (shape[0], shape[1]))
-        
+        # yn = torch.unflatten(yn, 0, (shape[0], shape[1]))
+        # yn = yn.view(batch, seq, -1)
 		# flatten for lstm
-        yn = torch.flatten(yn, 2)
+        # yn = torch.flatten(yn, 2)
         
 		# lstm stuff
         yn = torch.nn.utils.rnn.pack_padded_sequence(
             yn, lengths, enforce_sorted=False, batch_first=True
         )
         yn, (hn, cn) = self.rnn(yn)
-        hn = hn[self.num_layers-1,:].squeeze()
-        # cn = cn[self.num_layers-1,:].squeeze()
+        
+        yn, lens_unpacked = torch.nn.utils.rnn.pad_packed_sequence(yn, batch_first=True, total_length=seq)
+        
+        hn = hn.squeeze()
+        an = self.attention(yn).squeeze()
+       	
+		# indices = lens_unpacked - 1
+        # indices = torch.unsqueeze(indices, 1)
+        # indices = torch.unsqueeze(indices, 2)
+        # indices = torch.repeat_interleave(indices, self.hidden_size, dim=2).to(device)
+        # yn = torch.gather(yn, 1, indices).squeeze()
 
-        yn, lens_unpacked = torch.nn.utils.rnn.pad_packed_sequence(yn, batch_first=True)
-        indices = lens_unpacked - 1
-        indices = torch.unsqueeze(indices, 1)
-        indices = torch.unsqueeze(indices, 2)
-        indices = torch.repeat_interleave(indices, self.hidden_size, dim=2).to(device)
-        yn = torch.gather(yn, 1, indices).squeeze()
-
-        allStates = torch.hstack([yn, hn])
-        yn = self.eloScorer(allStates)
+        # allStates = torch.hstack([yn, hn])
+        yn = self.eloScorer(torch.cat([an, hn], dim=1))
         return yn.squeeze()
 
 
@@ -118,27 +151,31 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 neginf = -sys.maxsize - 1
 
 # training parameters
-N = 25000
+N = 10000
 validationPercent = 0.05
-batchSize = 1024
-lr = 1e-5
-nEpochs = 200
-trainModel = False
+batchSize = 2048
+lr = 1e-4
+nEpochs = 150
+trainModel = True
+loadModel = False
+minLen = 30
+maxLen = 199
 
 # load in data
-df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
+# df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
+df = pd.read_pickle("/Users/bantingl/Documents/NamingStuffIsHard/SavedGameN_10070.pickle.zip")
 
-moveTensors = list(map(torch.Tensor, df["MoveScores"][0:N]))
-boardTensors = list(map(torch.Tensor, df["boards"][0:N]))
+moveTensors = list(map(torch.Tensor, df["evals"][0:N]))
+boardTensors = list(map(torch.Tensor, df["encodings"][0:N]))
 
 lengths = torch.tensor(list(map(len, moveTensors)))[0:N]
-white_elo = torch.tensor(df["white_elo"])[0:N]
-black_elo = torch.tensor(df["black_elo"])[0:N]
+white_elo = torch.tensor(df["white"])[0:N]
+black_elo = torch.tensor(df["black"])[0:N]
 labels = torch.hstack([white_elo[:, None], black_elo[:, None]]).float()
 
 
 keptGames = torch.nonzero(
-    torch.logical_and(lengths >= 10, lengths <= 100)
+    torch.logical_and(lengths >= minLen, lengths <= maxLen)
 ).squeeze()
 
 labels = labels[keptGames, ...]
@@ -166,7 +203,12 @@ mean = torch.mean(labels, 0, keepdim=True)
 std = torch.std(labels, 0, keepdim=True)
 normLabels = (labels - mean) / std
 
-dataset = ChessBoardDataset(boardsAndMoves, normLabels, lengths)
+# print(f"label mean {mean}")
+# print(f"label std {std}")
+# exit()
+
+# dataset = ChessBoardDataset(boardsAndMoves, normLabels, lengths)
+dataset = SequenceDataset(boardsAndMoves, normLabels, lengths)
 
 # train, validation split
 trainData, validationData = torch.utils.data.random_split(
@@ -178,13 +220,22 @@ trainLoader = torch.utils.data.DataLoader(
 )
 validationLoader = torch.utils.data.DataLoader(validationData, batch_size=batchSize)
 
-net = EloPredictionNet().to(device)
+net = EloPredictionNet(maxLen).to(device)
 criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
-# scheduler = torch.optim.lr_scheduler.StepLR(optim, 10, 0.9, verbose=True)
+# scheduler = torch.optim.lr_scheduler.StepLR(optim, 50, 0.5, verbose=True)
 
 bestLoss = float('inf')
 PATH = "./convolutionalNetWeights.chk"
+
+if loadModel:
+	checkpoint = torch.load(PATH)
+	net.load_state_dict(checkpoint['model_state_dict'])
+	optim.load_state_dict(checkpoint['optimizer_state_dict'])
+	epoch = checkpoint['epoch']
+	bestLoss = checkpoint['loss']
+	print(f"Loaded model parameters of with loss: {bestLoss} at epoch: {epoch}")
+	
 
 if trainModel:
 	for epoch in range(nEpochs):
@@ -225,16 +276,9 @@ if trainModel:
 				'epoch': epoch,
 				'model_state_dict': net.state_dict(),
 				'optimizer_state_dict': optim.state_dict(),
-				'loss': epochLoss,
+				'loss': validationLoss,
 				}, PATH)
-else:
-    checkpoint = torch.load(PATH)
-    net.load_state_dict(checkpoint['model_state_dict'])
-    optim.load_state_dict(checkpoint['optimizer_state_dict'])
-    epoch = checkpoint['epoch']
-    loss = checkpoint['loss']
-    print(f"Loaded model parameters of with loss: {loss} at epoch: {epoch}")
-    net.eval()
+    
 
 # test model
 black = []
@@ -244,6 +288,9 @@ blackAvg = []
 whiteAvg = []
 
 avg = torch.mean(normLabels, dim=0).to(device)
+
+testWhite = []
+predictWhite = []
 
 net.eval()
 testLoss = torch.nn.MSELoss(reduction='none')
@@ -265,7 +312,17 @@ with torch.no_grad():
 
         blackAvg.extend(avgErrors[:,1])
         whiteAvg.extend(avgErrors[:,0])
+        
+        testWhite.extend(target[:,0].cpu())
+        predictWhite.extend(outputs[:,0].cpu())
 
+plt.figure()
+plt.scatter(testWhite, predictWhite)
+plt.plot([-2, 2], [-2,2], 'k--')
+plt.title("White Elo")
+plt.xlabel("True")
+plt.ylabel("Prediction")
+plt.savefig("scatter.png")
 
 # create tolerance curves
 white = torch.tensor(white)
