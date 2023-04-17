@@ -31,6 +31,13 @@ class PolarsDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self.N
 
+    def normalizationParams(self):
+        elos = self.frame.select("white_elo", "black_elo")
+        
+        mean = elos.mean().collect()
+        std = elos.std().collect()
+        print(mean, std)
+        
     def setupNextBatch(self):
         frameSlice = self.frame.slice(self.offset, self.batchsize).collect()
 

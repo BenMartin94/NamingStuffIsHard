@@ -120,13 +120,15 @@ neginf = -sys.maxsize - 1
 # training parameters
 validationPercent = 0.05
 batchSize = 2048
-lr = 1e-4
+lr = 1e-5
 trainModel = True
 loadModel = False
 
 N = 2_974_929
 data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameLarge.parquet"
 dataset = PolarsDataset(data, N, batch_size=1000)
+
+# dataset.normalizationParams()
 
 
 net = EloPredictionNet().to(device)
@@ -147,7 +149,7 @@ if loadModel:
 
 epochLoss = 0.0
 net.train()
-for i in range(10):
+for i in range(100):
     print("Fetching batch")
     batch = dataset[i]
     print("Received batch")
@@ -161,7 +163,7 @@ for i in range(10):
     data, target = data.to(device), target.to(device)
 
 	# reduce size of predictions
-    target /= 1000.0
+    target = (target - 1530) / 370
     
     optim.zero_grad()
 
@@ -173,8 +175,13 @@ for i in range(10):
     optim.step()
     epochLoss += loss.item()
 
-    print(f"nBatches: {i} batch loss: {epochLoss / batchSize} ")
+    print(f"nBatches: {i} batch loss: {epochLoss} ")
     epochLoss = 0.0
+    
+    torch.save({
+        'model_state_dict': net.state_dict(),
+        'optimizer_state_dict': optim.state_dict(),
+        }, 'ConvolutionalEloModel.state')
 
 exit()    
 
