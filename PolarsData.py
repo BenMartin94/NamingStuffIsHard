@@ -1,15 +1,16 @@
-import polars
+import polars as pl
 import torch
 import torch.utils.data
 from scipy.special import expit as sigmoid
 import numpy as np
+import pyarrow
 
 torch.set_default_dtype(torch.float)
 
 class PolarsDataset(torch.utils.data.Dataset):
     def __init__(self, filepath, N, batch_size=1000) -> None:
         super().__init__()
-        self.frame = polars.scan_parquet(filepath)
+        self.frame = pl.scan_parquet(filepath)
         self.N = N // batch_size
         # mini batching in the dataset
         self.batchsize = batch_size
@@ -40,33 +41,44 @@ class PolarsDataset(torch.utils.data.Dataset):
         
     def setupNextBatch(self):
         frameSlice = self.frame.slice(self.offset, self.batchsize).collect()
-
+        print(frameSlice)
+        white_elo = frameSlice["white_elo"].to_numpy(zero_copy_only=True)
+        black_elo = frameSlice["black_elo"].to_numpy(zero_copy_only=True)
+        self.labels = torch.from_numpy(np.hstack([white_elo[:, None], black_elo[:, None]]))
+        
         size = frameSlice.height
-
-        # the actual labels
-        white_elo = frameSlice["white_elo"]
-        black_elo = frameSlice["black_elo"]
 
         # postions evaluations
         evals = frameSlice["evals"]
         evals_idx = frameSlice["evals_idx"]
         mate_evals = frameSlice["mate_evals"]
         mate_evals_idx = frameSlice["mate_evals_idx"]
-
-        # the positions themselves
-        pawns = frameSlice["pawns"]
-        bishops = frameSlice["bishops"]
-        knights = frameSlice["knights"]
-        rooks = frameSlice["rooks"]
-        queens = frameSlice["queens"]
-        kings = frameSlice["kings"]
-        white = frameSlice["white_mask"]
-        black = frameSlice["black_mask"]
-
-        # length of each sequence, needed to pack for pytorch
-        self.lengths = [pawns[h].shape[0] for h in range(size)]
-
-        # evals -> win probability
+        
+		# length of each sequence, needed to pack for pytorch
+        frameSlice = frameSlice.with_columns(
+            pl.struct(["evals", "mate_evals"]).apply(
+            	lambda x: len(x["evals"]) + len("mate_evals")
+            ).alias("eval_lengths")
+        )
+        print(frameSlice["eval_lengths"])
+        
+        winChance = frameSlice.select(
+            pl.concat_list([
+            	"evals_idx", 
+            	"mate_evals_idx"
+            ]).apply(lambda x: x-1).alias("all_idx"),
+            pl.concat_list([
+            	pl.col("evals").apply(sigmoid), # sigmoid to stockfish evaluation to get win probability
+            	pl.col("mate_evals").apply(np.sign) # sign function to get win probability for mate in x: -100% or +100%
+            ]).alias("win_chance"),
+        )
+        # sort combined winchances
+        winChance = winChance.select(
+            pl.col("win_chance").arr.take(pl.col("all_idx"))
+		)
+        print(winChance)
+        exit()
+		# evals -> win probability
         self.winChances = []
         for i in range(size):
             winChance = torch.zeros(self.lengths[i])
@@ -80,6 +92,19 @@ class PolarsDataset(torch.utils.data.Dataset):
             ).float()
 
             self.winChances.append(winChance)
+            
+        # the positions themselves
+        pawns = frameSlice["pawns"]
+        bishops = frameSlice["bishops"]
+        knights = frameSlice["knights"]
+        rooks = frameSlice["rooks"]
+        queens = frameSlice["queens"]
+        kings = frameSlice["kings"]
+        white = frameSlice["white_mask"]
+        black = frameSlice["black_mask"]
+
+        
+       
 
         # evals -> board state
         self.boards = []
@@ -168,9 +193,4 @@ class PolarsDataset(torch.utils.data.Dataset):
             board[:, 12, :] = self.winChances[i][:,None]
             self.boards.append(rawBoard)
 
-        # labels
-        white_elo = torch.from_numpy(white_elo.to_numpy())[:, None]
-        black_elo = torch.from_numpy(black_elo.to_numpy())[:, None]
-
-        self.labels = torch.cat([white_elo, black_elo], dim=1).float()
         
