@@ -1,11 +1,8 @@
 import polars as pl
 import torch
 import torch.utils.data
-from scipy.special import expit as sigmoid
 import numpy as np
-
-# torch.set_default_dtype(torch.float)
-
+import asyncio
 
 class PolarsDataset(torch.utils.data.Dataset):
     def __init__(self, filepath, N, batch_size=1000) -> None:
@@ -13,7 +10,7 @@ class PolarsDataset(torch.utils.data.Dataset):
         self.frame = pl.read_parquet(filepath)
         self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
         # print(self.frame)
-        self.N = N // batch_size
+        self.N = N
         # mini batching in the dataset
         self.batchsize = batch_size
         self.offset = 0
@@ -22,9 +19,14 @@ class PolarsDataset(torch.utils.data.Dataset):
         # batchIndex = index % self.batchsize
         # create a new batch if needed
         # if batchIndex == 0:
+        if self.offset + self.batchsize > self.N:
+            self.offset = self.N - self.batchsize
         self.setupNextBatch()
         self.offset += self.batchsize
 
+        if self.offset >= self.N:
+            self.offset = 0
+        
         return (
             self.boards,
             self.labels,
@@ -83,4 +85,79 @@ class PolarsDataset(torch.utils.data.Dataset):
         self.labels
         self.lengths = lengths
 
+
+class PolarsDataStream(torch.utils.data.IterableDataset):
+    def __init__(self, filename, N, batch_size=5*2048) -> None:
+        super().__init__()
+        self.lazyframe = pl.scan_parquet(filename)
+        self.N = N
+        self.batch_size=batch_size
+
+        self.offset = 0
+        self.index = 0
+        
+        self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
+        
+        
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        # out of data, get more
+        data_index = self.index % self.batch_size
+                
+        if data_index == 0:
+            print(f"Dataset setting up new batch")
+            self.setupNextBatch()
+            self.offset += self.batch_size
+            # wrap around
+            if self.offset >= self.N:
+                self.offset = 0
+        self.index += 1
+        
+        return self.boards[data_index, ...], self.labels[data_index,...], self.lengths[data_index]
 		
+    def setupNextBatch(self):
+        frameSlice = self.lazyframe.slice(self.offset, self.batch_size)#.collect()
+        elos = frameSlice.select(["white_elo", "black_elo"]).collect()
+        
+        white_elo = elos["white_elo"].to_numpy(zero_copy_only=True)
+        black_elo = elos["black_elo"].to_numpy(zero_copy_only=True)
+        self.labels = torch.from_numpy(np.hstack([white_elo[:, None], black_elo[:, None]]))
+        
+        size = self.batch_size
+
+        lengths = frameSlice.select(
+            pl.col("win_chances").arr.lengths().alias("lengths")
+        ).collect()["lengths"].to_list()
+        
+		# postions evaluations
+        win_chance = frameSlice.select(pl.col("win_chances")).collect()["win_chances"].to_list()
+        list_of_evals = list(map(torch.tensor, win_chance))
+        padded_evals = torch.nn.utils.rnn.pad_sequence(list_of_evals, batch_first=True)
+        
+        boards = frameSlice.select(pl.col("games")).collect()["games"].to_list()
+        list_of_tensors = list(map(torch.tensor, boards))
+        padded_boards = torch.nn.utils.rnn.pad_sequence(list_of_tensors, batch_first=True)
+        
+        maxLen = padded_boards.shape[1]
+        # convert to convolutional format
+        conv_sequence = torch.zeros((size, maxLen, 18, 64))
+        
+        for i in range(len(self.piecemap)):
+            conv_sequence[...,i,:] = padded_boards[...,0:64] == self.piecemap[i]
+
+		# 12->encoding of white move or not
+		# 13->white kingside castle
+		# 14->white queenside castle
+		# 15->black kindside castle
+		# 16->black queenside castle
+        conv_sequence[..., 12:17, :] = padded_boards[..., 64:69, None]
+        
+		#17->movescore
+        conv_sequence[..., 17, :] = padded_evals[..., :, None]
+        
+        self.boards = conv_sequence.view(-1, maxLen, 18, 8, 8)
+        self.labels
+        self.lengths = lengths   
+	

@@ -5,7 +5,7 @@ import torch.nn
 import torch.utils.data
 import sys
 import matplotlib.pyplot as plt
-from PolarsData import PolarsDataset
+from PolarsData import PolarsDataset, PolarsDataStream
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
@@ -119,16 +119,19 @@ neginf = -sys.maxsize - 1
 
 # training parameters
 validationPercent = 0.05
-batchSize = 512
-lr = 1e-5
+batchSize = 1024
+lr = 1e-3
 trainModel = True
 loadModel = False
+saveModel = False
 
 # N = 2_974_929
-N = 28_264
-data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedium.parquet"
-dataset = PolarsDataset(data, N, batch_size=batchSize)
-
+# N = 18_387
+N = 198_285
+data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedLarge.parquet"
+# dataset = PolarsDataset(data, N, batch_size=batchSize)
+dataset = PolarsDataStream(data, N)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=batchSize, shuffle=False)
 # dataset.normalizationParams()
 
 
@@ -137,53 +140,113 @@ criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 
 bestLoss = float('inf')
-PATH = "./convolutionalNetWeights.chk"
+PATH = 'ConvolutionalEloModel.state'
 
 if loadModel:
 	checkpoint = torch.load(PATH)
 	net.load_state_dict(checkpoint['model_state_dict'])
 	optim.load_state_dict(checkpoint['optimizer_state_dict'])
-	epoch = checkpoint['epoch']
-	bestLoss = checkpoint['loss']
-	print(f"Loaded model parameters of with loss: {bestLoss} at epoch: {epoch}")
 	
-
 epochLoss = 0.0
-net.train()
-for i in range(100):
-    print("Fetching batch")
-    batch = dataset[i]
-    print("Received batch")
+if trainModel:
+	net.train()
+	for i, (data, target, lengths) in enumerate(dataloader):
+		data, target = data.to(device), target.to(device)
+
+		# reduce size of predictions
+		target = (target - 1530) / 370
+		
+		optim.zero_grad()
+
+		outputs = net.forward(data, lengths)
+
+		loss = criterion(outputs, target)
+		loss.backward()
+
+		optim.step()
+		epochLoss += loss.item()
+
+		print(f"nBatches: {i} batch loss: {epochLoss} ")
+		epochLoss = 0.0
+		
+		if saveModel:
+			torch.save({
+				'model_state_dict': net.state_dict(),
+				'optimizer_state_dict': optim.state_dict(),
+				}, PATH)
+exit()
+# validate model
+net.eval()
+testLoss = torch.nn.MSELoss(reduction='none')
+
+black = []
+white = []
+blackTrue = []
+whiteTrue = []
+
+errorsWhite = []
+whiteNorms = []
+
+with torch.no_grad():
+    batch = dataset[0]
     
     data = batch[0]
     target = batch[1]
     lengths = batch[2]
-    
-    data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True)
     
     data, target = data.to(device), target.to(device)
 
 	# reduce size of predictions
     target = (target - 1530) / 370
     
-    optim.zero_grad()
-
     outputs = net.forward(data, lengths)
-
-    loss = criterion(outputs, target)
-    loss.backward()
-
-    optim.step()
-    epochLoss += loss.item()
-
-    print(f"nBatches: {i} batch loss: {epochLoss} ")
-    epochLoss = 0.0
     
-    torch.save({
-        'model_state_dict': net.state_dict(),
-        'optimizer_state_dict': optim.state_dict(),
-        }, 'ConvolutionalEloModel.state')
+    blackTrue.extend(target[:,1].cpu().numpy())
+    whiteTrue.extend(target[:,0].cpu().numpy())
+    
+    black.extend(outputs[:,1].cpu().numpy())
+    white.extend(outputs[:,0].cpu().numpy())
+    
+	# see errors
+    exampleLoss = testLoss(outputs, target)
+    
+    errorsWhite = exampleLoss[:,0].cpu().numpy()
+    whiteNorms = (target[:,0]**2).cpu().numpy()
+    
+    for j in range(10):
+        print(f"label {target[j,:]} prediction: {outputs[j,:]}")     
 
+
+steps = np.linspace(0, np.max(whiteNorms), 100)
+total = whiteNorms.shape[0]
+whiteCounts = [np.count_nonzero(errorsWhite <= tol) / total for tol in steps]
+# blackCounts = [np.count_nonzero(black <= tol) / total for tol in steps]
+
+whiteAvgCounts = [np.count_nonzero(whiteNorms <= tol) / total for tol in steps]
+# blackAvgCounts = [np.count_nonzero(blackAvg <= tol) / total for tol in steps]
+
+plt.figure()
+plt.plot(steps, whiteCounts, '-')
+plt.plot(steps, whiteAvgCounts, '-.')
+plt.xlabel("Unnormalized Error")
+plt.ylabel("Percentage of Examples Less than Normalized Error")
+plt.title("White Elo Prediction Tolerance Curve")
+plt.savefig("white_tolerance.png")
+
+
+plt.figure()
+plt.scatter(whiteTrue, white)
+plt.title("White Elo")
+plt.xlabel("True")
+plt.ylabel("Prediction")
+plt.savefig("white_elo_scatter.png")
+
+plt.figure()
+plt.scatter(blackTrue, black)
+plt.title("Black Elo")
+plt.xlabel("True")
+plt.ylabel("Prediction")
+plt.savefig("black_elo_scatter.png")
 exit()    
 
 # test model
