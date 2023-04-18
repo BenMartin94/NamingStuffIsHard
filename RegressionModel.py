@@ -7,35 +7,41 @@ import sys
 import matplotlib.pyplot as plt
 from PolarsData import PolarsDataset, PolarsDataStream
 
+
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
-	def __init__(self, X, y, lengths):
-		super().__init__(X, y)
-		self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
-		self.lengths = lengths
+    def __init__(self, X, y, lengths):
+        super().__init__(X, y)
+        self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
+        self.lengths = lengths
 
-	# for when using convolutional layer
-	def __getitem__(self, index):
-		data, target = super().__getitem__(index)
-		# process batch into chess boards
-		shape = data.size()
-		chessBoardTensor = torch.zeros(shape[0], 18, 64)
-		
-		# encode each chess piece
-		for i in range(len(self.piecemap)):
-			chessBoardTensor[...,i,:] = data[...,0:64] == self.piecemap[i]
+    # for when using convolutional layer
+    def __getitem__(self, index):
+        data, target = super().__getitem__(index)
+        # process batch into chess boards
+        shape = data.size()
+        chessBoardTensor = torch.zeros(shape[0], 18, 64)
 
-		# 12->encoding of white move or not
-		# 13->white kingside castle
-		# 14->white queenside castle
-		# 15->black kindside castle
-		# 16->black queenside castle
-		chessBoardTensor[..., 12:17, :] = data[..., 64:69, None]
-        
-		#17->movescore
-		chessBoardTensor[..., 17, :] = data[..., 72, None]
-                
-		return chessBoardTensor.reshape(shape[0], 18, 8, 8).squeeze(), target.squeeze(), self.lengths[index]
+        # encode each chess piece
+        for i in range(len(self.piecemap)):
+            chessBoardTensor[..., i, :] = data[..., 0:64] == self.piecemap[i]
+
+        # 12->encoding of white move or not
+        # 13->white kingside castle
+        # 14->white queenside castle
+        # 15->black kindside castle
+        # 16->black queenside castle
+        chessBoardTensor[..., 12:17, :] = data[..., 64:69, None]
+
+        # 17->movescore
+        chessBoardTensor[..., 17, :] = data[..., 72, None]
+
+        return (
+            chessBoardTensor.reshape(shape[0], 18, 8, 8).squeeze(),
+            target.squeeze(),
+            self.lengths[index],
+        )
+
 
 class SequenceDataset(torch.utils.data.TensorDataset):
     def __init__(self, X, y, lengths):
@@ -52,28 +58,29 @@ class SequenceDataset(torch.utils.data.TensorDataset):
     def __len__(self):
         return len(self.lengths)
 
+
 class EloPredictionNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.hidden_size = 256
-        
+
         self.features1 = torch.nn.Sequential(
-            torch.nn.Conv2d(18, 96, (4,4)), 
-            torch.nn.ReLU(), # 6 x 6
-            torch.nn.Conv2d(96, 256, (4,4)),
-            torch.nn.ReLU(), # 4x4
-            torch.nn.Conv2d(256, 64, (1,1)),
-            torch.nn.ReLU(), # 4x4
+            torch.nn.Conv2d(18, 96, (4, 4)),
+            torch.nn.ReLU(),  # 6 x 6
+            torch.nn.Conv2d(96, 256, (4, 4)),
+            torch.nn.ReLU(),  # 4x4
+            torch.nn.Conv2d(256, 64, (1, 1)),
+            torch.nn.ReLU(),  # 4x4
         )
-        
+
         self.rnn = torch.nn.LSTM(
-            input_size=self.hidden_size, 
-            hidden_size=self.hidden_size, 
+            input_size=self.hidden_size,
+            hidden_size=self.hidden_size,
             batch_first=True,
         )
-        
+
         self.eloScorer = torch.nn.Sequential(
-            torch.nn.Linear(2*self.hidden_size,  self.hidden_size),
+            torch.nn.Linear(2 * self.hidden_size, self.hidden_size),
             torch.nn.ReLU(),
             torch.nn.Linear(self.hidden_size, 2),
         )
@@ -83,25 +90,25 @@ class EloPredictionNet(torch.nn.Module):
         shape = yn.size()
         batch = shape[0]
         seq = shape[1]
-        
+
         # flatten batch and sequence for conv2d
         yn = torch.flatten(yn, start_dim=0, end_dim=1)
-        yn = yn.view(batch*seq, -1, 8, 8)
+        yn = yn.view(batch * seq, -1, 8, 8)
         yn = self.features1(yn)
-        
+
         # unflatten
         yn = yn.view(batch, seq, -1)
-		
-		# lstm stuff
+
+        # lstm stuff
         yn = torch.nn.utils.rnn.pack_padded_sequence(
             yn, lengths, enforce_sorted=False, batch_first=True
         )
         yn, (hn, cn) = self.rnn(yn)
-        
+
         yn, lens_unpacked = torch.nn.utils.rnn.pad_packed_sequence(yn, batch_first=True)
-        
+
         hn = hn.squeeze()
-        
+
         indices = lens_unpacked - 1
         indices = torch.unsqueeze(indices, 1)
         indices = torch.unsqueeze(indices, 2)
@@ -123,15 +130,17 @@ batchSize = 1024
 lr = 1e-3
 trainModel = True
 loadModel = False
-saveModel = False
+saveModel = True
 
 # N = 2_974_929
 # N = 18_387
 N = 198_285
 data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedLarge.parquet"
 # dataset = PolarsDataset(data, N, batch_size=batchSize)
-dataset = PolarsDataStream(data, N)
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=batchSize, shuffle=False)
+dataset = PolarsDataStream(data, N, batch_size=batchSize)
+dataloader = torch.utils.data.DataLoader(
+    dataset, batch_size=None, shuffle=False, num_workers=8
+)
 # dataset.normalizationParams()
 
 
@@ -139,45 +148,51 @@ net = EloPredictionNet().to(device)
 criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 
-bestLoss = float('inf')
-PATH = 'ConvolutionalEloModel.state'
+bestLoss = float("inf")
+PATH = "ConvolutionalEloModel.state"
 
 if loadModel:
-	checkpoint = torch.load(PATH)
-	net.load_state_dict(checkpoint['model_state_dict'])
-	optim.load_state_dict(checkpoint['optimizer_state_dict'])
-	
+    checkpoint = torch.load(PATH)
+    net.load_state_dict(checkpoint["model_state_dict"])
+    optim.load_state_dict(checkpoint["optimizer_state_dict"])
+
+
 epochLoss = 0.0
+i = 0
 if trainModel:
-	net.train()
-	for i, (data, target, lengths) in enumerate(dataloader):
-		data, target = data.to(device), target.to(device)
-
+    net.train()
+    for data, target, lengths in dataloader:
+        # print("waiting on data")
+        data, target = data.to(device), target.to(device)
+        
 		# reduce size of predictions
-		target = (target - 1530) / 370
-		
-		optim.zero_grad()
+        target = (target - 1530) / 370
 
-		outputs = net.forward(data, lengths)
+        optim.zero_grad()
 
-		loss = criterion(outputs, target)
-		loss.backward()
+        outputs = net.forward(data, lengths)
 
-		optim.step()
-		epochLoss += loss.item()
+        loss = criterion(outputs, target)
+        loss.backward()
 
-		print(f"nBatches: {i} batch loss: {epochLoss} ")
-		epochLoss = 0.0
-		
-		if saveModel:
-			torch.save({
-				'model_state_dict': net.state_dict(),
-				'optimizer_state_dict': optim.state_dict(),
-				}, PATH)
+        optim.step()
+        epochLoss += loss.item()
+
+        print(f"nBatches: {i} batch loss: {epochLoss} ")
+        epochLoss = 0.0
+        i += 1
+        if saveModel:
+            torch.save(
+                {
+                    "model_state_dict": net.state_dict(),
+                    "optimizer_state_dict": optim.state_dict(),
+                },
+                PATH,
+            )
 exit()
 # validate model
 net.eval()
-testLoss = torch.nn.MSELoss(reduction='none')
+testLoss = torch.nn.MSELoss(reduction="none")
 
 black = []
 white = []
@@ -189,32 +204,32 @@ whiteNorms = []
 
 with torch.no_grad():
     batch = dataset[0]
-    
+
     data = batch[0]
     target = batch[1]
     lengths = batch[2]
-    
+
     data, target = data.to(device), target.to(device)
 
-	# reduce size of predictions
+    # reduce size of predictions
     target = (target - 1530) / 370
-    
+
     outputs = net.forward(data, lengths)
-    
-    blackTrue.extend(target[:,1].cpu().numpy())
-    whiteTrue.extend(target[:,0].cpu().numpy())
-    
-    black.extend(outputs[:,1].cpu().numpy())
-    white.extend(outputs[:,0].cpu().numpy())
-    
-	# see errors
+
+    blackTrue.extend(target[:, 1].cpu().numpy())
+    whiteTrue.extend(target[:, 0].cpu().numpy())
+
+    black.extend(outputs[:, 1].cpu().numpy())
+    white.extend(outputs[:, 0].cpu().numpy())
+
+    # see errors
     exampleLoss = testLoss(outputs, target)
-    
-    errorsWhite = exampleLoss[:,0].cpu().numpy()
-    whiteNorms = (target[:,0]**2).cpu().numpy()
-    
+
+    errorsWhite = exampleLoss[:, 0].cpu().numpy()
+    whiteNorms = (target[:, 0] ** 2).cpu().numpy()
+
     for j in range(10):
-        print(f"label {target[j,:]} prediction: {outputs[j,:]}")     
+        print(f"label {target[j,:]} prediction: {outputs[j,:]}")
 
 
 steps = np.linspace(0, np.max(whiteNorms), 100)
@@ -226,8 +241,8 @@ whiteAvgCounts = [np.count_nonzero(whiteNorms <= tol) / total for tol in steps]
 # blackAvgCounts = [np.count_nonzero(blackAvg <= tol) / total for tol in steps]
 
 plt.figure()
-plt.plot(steps, whiteCounts, '-')
-plt.plot(steps, whiteAvgCounts, '-.')
+plt.plot(steps, whiteCounts, "-")
+plt.plot(steps, whiteAvgCounts, "-.")
 plt.xlabel("Unnormalized Error")
 plt.ylabel("Percentage of Examples Less than Normalized Error")
 plt.title("White Elo Prediction Tolerance Curve")
@@ -247,7 +262,7 @@ plt.title("Black Elo")
 plt.xlabel("True")
 plt.ylabel("Prediction")
 plt.savefig("black_elo_scatter.png")
-exit()    
+exit()
 
 # test model
 black = []
@@ -262,7 +277,7 @@ testWhite = []
 predictWhite = []
 
 net.eval()
-testLoss = torch.nn.MSELoss(reduction='none')
+testLoss = torch.nn.MSELoss(reduction="none")
 with torch.no_grad():
     for i, (data, target, lengths) in enumerate(validationLoader):
         data, target = data.to(device), target.to(device)
@@ -273,21 +288,21 @@ with torch.no_grad():
             print(f"Label: {target[j,:]} prediction: {outputs[j, :]}")
 
         errors = testLoss(outputs, target)
-        black.extend(errors[:,1])
-        white.extend(errors[:,0])
-        
+        black.extend(errors[:, 1])
+        white.extend(errors[:, 0])
+
         zeros = torch.zeros_like(target).to(device)
         avgErrors = testLoss(zeros, target)
 
-        blackAvg.extend(avgErrors[:,1])
-        whiteAvg.extend(avgErrors[:,0])
-        
-        testWhite.extend(target[:,0].cpu())
-        predictWhite.extend(outputs[:,0].cpu())
+        blackAvg.extend(avgErrors[:, 1])
+        whiteAvg.extend(avgErrors[:, 0])
+
+        testWhite.extend(target[:, 0].cpu())
+        predictWhite.extend(outputs[:, 0].cpu())
 
 plt.figure()
 plt.scatter(testWhite, predictWhite)
-plt.plot([-2, 2], [-2,2], 'k--')
+plt.plot([-2, 2], [-2, 2], "k--")
 plt.title("White Elo")
 plt.xlabel("True")
 plt.ylabel("Prediction")
@@ -324,16 +339,16 @@ whiteAvgCounts = [torch.count_nonzero(whiteAvg <= tol) / total for tol in steps]
 blackAvgCounts = [torch.count_nonzero(blackAvg <= tol) / total for tol in steps]
 
 plt.figure()
-plt.plot(steps, whiteCounts, '-')
-plt.plot(steps, whiteAvgCounts, '-.')
+plt.plot(steps, whiteCounts, "-")
+plt.plot(steps, whiteAvgCounts, "-.")
 plt.xlabel("Normalized Error")
 plt.ylabel("Percentage of Examples Less than Normalized Error")
 plt.title("White Elo")
 plt.savefig("white.png")
 
 plt.figure()
-plt.plot(steps, blackCounts, '-')
-plt.plot(steps, blackAvgCounts, '-.')
+plt.plot(steps, blackCounts, "-")
+plt.plot(steps, blackAvgCounts, "-.")
 plt.xlabel("Normalized Error")
 plt.ylabel("Percentage of Examples Less than Normalized Error")
 plt.title("Black Elo")
