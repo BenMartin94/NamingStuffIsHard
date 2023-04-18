@@ -58,7 +58,7 @@ class EloPredictionNet(torch.nn.Module):
         self.hidden_size = 256
         
         self.features1 = torch.nn.Sequential(
-            torch.nn.Conv2d(13, 96, (4,4)), 
+            torch.nn.Conv2d(18, 96, (4,4)), 
             torch.nn.ReLU(), # 6 x 6
             torch.nn.Conv2d(96, 256, (4,4)),
             torch.nn.ReLU(), # 4x4
@@ -119,14 +119,15 @@ neginf = -sys.maxsize - 1
 
 # training parameters
 validationPercent = 0.05
-batchSize = 2048
+batchSize = 512
 lr = 1e-5
 trainModel = True
 loadModel = False
 
-N = 2_974_929
-data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameLarge.parquet"
-dataset = PolarsDataset(data, N, batch_size=1000)
+# N = 2_974_929
+N = 28_264
+data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedium.parquet"
+dataset = PolarsDataset(data, N, batch_size=batchSize)
 
 # dataset.normalizationParams()
 
