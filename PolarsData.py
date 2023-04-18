@@ -2,8 +2,7 @@ import polars as pl
 import torch
 import torch.utils.data
 import numpy as np
-import asyncio
-
+import threading
 class PolarsDataset(torch.utils.data.Dataset):
     def __init__(self, filepath, N, batch_size=1000) -> None:
         super().__init__()
@@ -98,6 +97,10 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         
         self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
         
+        self.task = threading.Thread(target=self.setupNextBatch)
+        self.task.start()
+       
+        
         
     def __iter__(self):
         return self
@@ -107,9 +110,16 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         data_index = self.index % self.batch_size
                 
         if data_index == 0:
+            self.task.join()
+            self.boards = self.new_boards
+            self.labels = self.new_labels
+            self.lengths = self.new_lengths
+            
             print(f"Dataset setting up new batch")
-            self.setupNextBatch()
             self.offset += self.batch_size
+            self.task = threading.Thread(target=self.setupNextBatch)
+            self.task.start()
+           
             # wrap around
             if self.offset >= self.N:
                 self.offset = 0
@@ -123,7 +133,7 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         
         white_elo = elos["white_elo"].to_numpy(zero_copy_only=True)
         black_elo = elos["black_elo"].to_numpy(zero_copy_only=True)
-        self.labels = torch.from_numpy(np.hstack([white_elo[:, None], black_elo[:, None]]))
+        self.new_labels = torch.from_numpy(np.hstack([white_elo[:, None], black_elo[:, None]]))
         
         size = self.batch_size
 
@@ -157,7 +167,6 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
 		#17->movescore
         conv_sequence[..., 17, :] = padded_evals[..., :, None]
         
-        self.boards = conv_sequence.view(-1, maxLen, 18, 8, 8)
-        self.labels
-        self.lengths = lengths   
+        self.new_boards = conv_sequence.view(-1, maxLen, 18, 8, 8)
+        self.new_lengths = lengths   
 	
