@@ -67,10 +67,13 @@ class EloPredictionNet(torch.nn.Module):
         self.features1 = torch.nn.Sequential(
             torch.nn.Conv2d(18, 96, (4, 4)),
             torch.nn.ReLU(),  # 6 x 6
+            torch.nn.BatchNorm2d(96),
             torch.nn.Conv2d(96, 256, (4, 4)),
             torch.nn.ReLU(),  # 4x4
+            torch.nn.BatchNorm2d(256),
             torch.nn.Conv2d(256, 64, (1, 1)),
             torch.nn.ReLU(),  # 4x4
+            torch.nn.BatchNorm2d(64),
         )
 
         self.rnn = torch.nn.LSTM(
@@ -82,6 +85,7 @@ class EloPredictionNet(torch.nn.Module):
         self.eloScorer = torch.nn.Sequential(
             torch.nn.Linear(2 * self.hidden_size, self.hidden_size),
             torch.nn.ReLU(),
+            torch.nn.BatchNorm1d(self.hidden_size),
             torch.nn.Linear(self.hidden_size, 2),
         )
 
@@ -126,11 +130,11 @@ neginf = -sys.maxsize - 1
 
 # training parameters
 validationPercent = 0.05
-batchSize = 1024
+batchSize = 512
 lr = 1e-3
-trainModel = True
-loadModel = False
-saveModel = True
+trainModel = False
+loadModel = True
+saveModel = False
 
 # N = 2_974_929
 # N = 18_387
@@ -139,7 +143,10 @@ data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedLarge.parquet"
 # dataset = PolarsDataset(data, N, batch_size=batchSize)
 dataset = PolarsDataStream(data, N, batch_size=batchSize)
 dataloader = torch.utils.data.DataLoader(
-    dataset, batch_size=None, shuffle=False, num_workers=8
+    dataset, batch_size=None, shuffle=False, num_workers=24, persistent_workers=True
+)
+validationloader = torch.utils.data.DataLoader(
+     dataset, batch_size=None, shuffle=False, num_workers=1
 )
 # dataset.normalizationParams()
 
@@ -149,7 +156,7 @@ criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 
 bestLoss = float("inf")
-PATH = "ConvolutionalEloModel.state"
+PATH = "ConvolutionalEloModel_BN.state"
 
 if loadModel:
     checkpoint = torch.load(PATH)
@@ -160,36 +167,37 @@ if loadModel:
 epochLoss = 0.0
 i = 0
 if trainModel:
-    net.train()
-    for data, target, lengths in dataloader:
-        # print("waiting on data")
-        data, target = data.to(device), target.to(device)
-        
-		# reduce size of predictions
-        target = (target - 1530) / 370
+	net.train()
+	for outer in range(3):
+		for data, target, lengths in dataloader:
+			# print("waiting on data")
+			data, target = data.to(device), target.to(device)
+			
+			# reduce size of predictions
+			target = (target - 1530) / 370
 
-        optim.zero_grad()
+			optim.zero_grad()
 
-        outputs = net.forward(data, lengths)
+			outputs = net.forward(data, lengths)
 
-        loss = criterion(outputs, target)
-        loss.backward()
+			loss = criterion(outputs, target)
+			loss.backward()
 
-        optim.step()
-        epochLoss += loss.item()
+			optim.step()
+			epochLoss += loss.item()
 
-        print(f"nBatches: {i} batch loss: {epochLoss} ")
-        epochLoss = 0.0
-        i += 1
-        if saveModel:
-            torch.save(
-                {
-                    "model_state_dict": net.state_dict(),
-                    "optimizer_state_dict": optim.state_dict(),
-                },
-                PATH,
-            )
-exit()
+			print(f"nBatches: {i} batch loss: {epochLoss} ")
+			epochLoss = 0.0
+			i += 1
+			if saveModel:
+				torch.save(
+					{
+						"model_state_dict": net.state_dict(),
+						"optimizer_state_dict": optim.state_dict(),
+					},
+					PATH,
+				)
+
 # validate model
 net.eval()
 testLoss = torch.nn.MSELoss(reduction="none")
@@ -202,15 +210,12 @@ whiteTrue = []
 errorsWhite = []
 whiteNorms = []
 
+errorsBlack = []
+blackNorms = []
 with torch.no_grad():
-    batch = dataset[0]
-
-    data = batch[0]
-    target = batch[1]
-    lengths = batch[2]
-
-    data, target = data.to(device), target.to(device)
-
+    for data, target, lengths in validationloader:
+        data, target = data.to(device), target.to(device)
+        break
     # reduce size of predictions
     target = (target - 1530) / 370
 
@@ -228,26 +233,39 @@ with torch.no_grad():
     errorsWhite = exampleLoss[:, 0].cpu().numpy()
     whiteNorms = (target[:, 0] ** 2).cpu().numpy()
 
+    errorsBlack = exampleLoss[:, 1].cpu().numpy()
+    blackNorms = (target[:, 1] ** 2).cpu().numpy()
+
     for j in range(10):
         print(f"label {target[j,:]} prediction: {outputs[j,:]}")
 
 
-steps = np.linspace(0, np.max(whiteNorms), 100)
+steps = np.linspace(0, 1, 100)
 total = whiteNorms.shape[0]
-whiteCounts = [np.count_nonzero(errorsWhite <= tol) / total for tol in steps]
-# blackCounts = [np.count_nonzero(black <= tol) / total for tol in steps]
+whiteMax = np.max(whiteNorms)
+blackMax = np.max(blackNorms)
 
-whiteAvgCounts = [np.count_nonzero(whiteNorms <= tol) / total for tol in steps]
-# blackAvgCounts = [np.count_nonzero(blackAvg <= tol) / total for tol in steps]
+whiteCounts = [np.count_nonzero(errorsWhite <= tol*whiteMax) / total for tol in steps]
+blackCounts = [np.count_nonzero(errorsBlack <= tol*blackMax) / total for tol in steps]
+
+whiteAvgCounts = [np.count_nonzero(whiteNorms <= tol*whiteMax) / total for tol in steps]
+blackAvgCounts = [np.count_nonzero(blackNorms <= tol*blackMax) / total for tol in steps]
 
 plt.figure()
 plt.plot(steps, whiteCounts, "-")
 plt.plot(steps, whiteAvgCounts, "-.")
 plt.xlabel("Unnormalized Error")
-plt.ylabel("Percentage of Examples Less than Normalized Error")
+plt.ylabel("Percentage of Examples Less than Unnormalized Error")
 plt.title("White Elo Prediction Tolerance Curve")
 plt.savefig("white_tolerance.png")
 
+plt.figure()
+plt.plot(steps, blackCounts, "-")
+plt.plot(steps, blackAvgCounts, "-.")
+plt.xlabel("Unnormalized Error")
+plt.ylabel("Percentage of Examples Less than Unnormalized Error")
+plt.title("Black Elo Prediction Tolerance Curve")
+plt.savefig("black_tolerance.png")
 
 plt.figure()
 plt.scatter(whiteTrue, white)
