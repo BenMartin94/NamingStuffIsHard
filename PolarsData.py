@@ -3,7 +3,7 @@ import torch
 import torch.utils.data
 import numpy as np
 import threading
-import itertools
+import math
 
 def parallel_range(id, nworkers, start, stop):
     
@@ -109,10 +109,7 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         self.index = 0
         
         self.piecemap = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
-        
-        self.task = threading.Thread(target=self.setupNextBatch)
-        self.task.start()
-       
+               
         
         
     def __iter__(self):
@@ -122,7 +119,7 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         
         self.worker_batch_size = self.batch_size
         
-        total = (self.N // self.worker_batch_size)
+        total = self.N // self.worker_batch_size
         start, stop = parallel_range(id, nworkers, 0, total)
         
         mapped_itr = map(self.getBatch, range(start, stop))
@@ -159,6 +156,7 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         
         frameSlice = self.lazyframe.slice(offset, size)#.collect()
         elos = frameSlice.select(["white_elo", "black_elo"]).collect()
+        size = elos.height
         
         white_elo = elos["white_elo"].to_numpy(zero_copy_only=True)
         black_elo = elos["black_elo"].to_numpy(zero_copy_only=True)
