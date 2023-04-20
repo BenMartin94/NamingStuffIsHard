@@ -62,18 +62,33 @@ class SequenceDataset(torch.utils.data.TensorDataset):
 class EloPredictionNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.hidden_size = 256
+        self.hidden_size = 512
 
-        self.features1 = torch.nn.Sequential(
-            torch.nn.Conv2d(18, 96, (4, 4)),
+        # self.features1 = torch.nn.Sequential(
+        #     torch.nn.Conv2d(18, 96, (4, 4)),
+        #     torch.nn.ReLU(),  # 4 x 4
+        #     torch.nn.BatchNorm2d(96),
+        #     torch.nn.Conv2d(96, 256, (4, 4)),
+        #     torch.nn.ReLU(),  # 1 x 1
+        #     torch.nn.BatchNorm2d(256),
+        #     torch.nn.Conv2d(256, 64, (1, 1)),
+        #     torch.nn.ReLU(),  # 4x4
+        #     torch.nn.BatchNorm2d(64),
+        # )
+
+        self.features_deep = torch.nn.Sequential(
+            torch.nn.Conv2d(18, 96, (3, 3)),
             torch.nn.ReLU(),  # 6 x 6
             torch.nn.BatchNorm2d(96),
-            torch.nn.Conv2d(96, 256, (4, 4)),
-            torch.nn.ReLU(),  # 4x4
+            torch.nn.Conv2d(96, 256, (3, 3)),
+            torch.nn.ReLU(),  # 4 x 4
             torch.nn.BatchNorm2d(256),
-            torch.nn.Conv2d(256, 64, (1, 1)),
-            torch.nn.ReLU(),  # 4x4
-            torch.nn.BatchNorm2d(64),
+            torch.nn.Conv2d(256, 384, (3, 3)),
+            torch.nn.ReLU(),  # 2 x 2
+            torch.nn.BatchNorm2d(384),
+            torch.nn.Conv2d(384, 512, (2, 2)),
+            torch.nn.ReLU(),  # 1 x 1
+            torch.nn.BatchNorm2d(512),
         )
 
         self.rnn = torch.nn.LSTM(
@@ -98,7 +113,7 @@ class EloPredictionNet(torch.nn.Module):
         # flatten batch and sequence for conv2d
         yn = torch.flatten(yn, start_dim=0, end_dim=1)
         yn = yn.view(batch * seq, -1, 8, 8)
-        yn = self.features1(yn)
+        yn = self.features_deep(yn)
 
         # unflatten
         yn = yn.view(batch, seq, -1)
@@ -132,9 +147,9 @@ neginf = -sys.maxsize - 1
 validationPercent = 0.05
 batchSize = 512
 lr = 1e-3
-trainModel = False
-loadModel = True
-saveModel = False
+trainModel = True
+loadModel = False
+saveModel = True
 
 # N = 2_974_929
 # N = 18_387
@@ -156,7 +171,7 @@ criterion = torch.nn.MSELoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 
 bestLoss = float("inf")
-PATH = "ConvolutionalEloModel_BN.state"
+PATH = "ConvolutionalEloModel_BN_Deep.state"
 
 if loadModel:
     checkpoint = torch.load(PATH)
