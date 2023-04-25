@@ -6,7 +6,7 @@ import torch.utils.data
 import sys
 import matplotlib.pyplot as plt
 from PolarsData import PolarsDataset, PolarsDataStream
-
+from KaggleData import loadKaggleData
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
@@ -80,15 +80,19 @@ class EloPredictionNet(torch.nn.Module):
             torch.nn.Conv2d(18, 96, (3, 3)),
             torch.nn.ReLU(),  # 6 x 6
             torch.nn.BatchNorm2d(96),
+            torch.nn.Dropout2d(0.1),
             torch.nn.Conv2d(96, 256, (3, 3)),
             torch.nn.ReLU(),  # 4 x 4
             torch.nn.BatchNorm2d(256),
+            torch.nn.Dropout2d(0.1),
             torch.nn.Conv2d(256, 384, (3, 3)),
             torch.nn.ReLU(),  # 2 x 2
             torch.nn.BatchNorm2d(384),
+            torch.nn.Dropout2d(0.1),
             torch.nn.Conv2d(384, 512, (2, 2)),
             torch.nn.ReLU(),  # 1 x 1
             torch.nn.BatchNorm2d(512),
+            torch.nn.Dropout2d(0.1)
         )
 
         self.rnn = torch.nn.LSTM(
@@ -101,6 +105,7 @@ class EloPredictionNet(torch.nn.Module):
             torch.nn.Linear(2 * self.hidden_size, self.hidden_size),
             torch.nn.ReLU(),
             torch.nn.BatchNorm1d(self.hidden_size),
+            torch.nn.Dropout1d(0.1),
             torch.nn.Linear(self.hidden_size, 2),
         )
 
@@ -141,37 +146,53 @@ class EloPredictionNet(torch.nn.Module):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # device = 'cpu'
-neginf = -sys.maxsize - 1
 
 # training parameters
 validationPercent = 0.05
-batchSize = 512
+batchSize = 384
 lr = 1e-3
 trainModel = True
-loadModel = False
-saveModel = True
+loadModel = True
+saveModel = False
 
 # N = 2_974_929
 # N = 18_387
-N = 198_285
-data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedLarge.parquet"
-# dataset = PolarsDataset(data, N, batch_size=batchSize)
-dataset = PolarsDataStream(data, N, batch_size=batchSize)
-dataloader = torch.utils.data.DataLoader(
-    dataset, batch_size=None, shuffle=False, num_workers=24, persistent_workers=True
-)
-validationloader = torch.utils.data.DataLoader(
-     dataset, batch_size=None, shuffle=False, num_workers=1
-)
+# N = 198_285
+# data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedLarge.parquet"
+# # dataset = PolarsDataset(data, N, batch_size=batchSize)
+# dataset = PolarsDataStream(data, N, batch_size=batchSize)
+# dataset.normalizationParams()
+# dataloader = torch.utils.data.DataLoader(
+#     dataset, batch_size=None, shuffle=False, num_workers=24, persistent_workers=True, pin_memory=True
+# )
+# validationloader = torch.utils.data.DataLoader(
+#      dataset, batch_size=None, shuffle=False, num_workers=1
+# )
 # dataset.normalizationParams()
 
+# load kaggle data
+X, y, lengths = loadKaggleData("KaggleData/dataframe.pickle.zip")
+fullset = ChessBoardDataset(X, y, lengths)
+dataset, validationset = torch.utils.data.random_split(fullset, [0.95, 0.05])
+dataloader = torch.utils.data.DataLoader(
+    dataset, batch_size=batchSize, num_workers=2, persistent_workers=True, pin_memory=True, shuffle=True
+)
+validationloader = torch.utils.data.DataLoader(
+    validationset, batch_size=batchSize,
+)
+kaggleMean = torch.mean(y, dim=0).unsqueeze(0).to(device)
+kaggleStd = torch.std(y, dim=0).unsqueeze(0).to(device)
+# exit()
+
+print(kaggleMean)
+print(kaggleStd)
 
 net = EloPredictionNet().to(device)
-criterion = torch.nn.MSELoss()
+criterion = torch.nn.HuberLoss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
 
 bestLoss = float("inf")
-PATH = "ConvolutionalEloModel_BN_Deep.state"
+PATH = "ConvolutionalEloModel_BN_Deep_Huber_Dropout.state"
 
 if loadModel:
     checkpoint = torch.load(PATH)
@@ -183,14 +204,14 @@ epochLoss = 0.0
 i = 0
 if trainModel:
 	net.train()
-	for outer in range(3):
+	for outer in range(2):
 		for data, target, lengths in dataloader:
-			# print("waiting on data")
 			data, target = data.to(device), target.to(device)
 			
 			# reduce size of predictions
-			target = (target - 1530) / 370
-
+			# target = (target - 1600) / 370
+			target = (target - kaggleMean) / kaggleStd
+                        
 			optim.zero_grad()
 
 			outputs = net.forward(data, lengths)
@@ -215,7 +236,7 @@ if trainModel:
 
 # validate model
 net.eval()
-testLoss = torch.nn.MSELoss(reduction="none")
+testLoss = torch.nn.HuberLoss(reduction="none")
 
 black = []
 white = []
@@ -233,7 +254,8 @@ with torch.no_grad():
         break
     # reduce size of predictions
     target = (target - 1530) / 370
-
+    test = torch.zeros_like(target).to(device)
+    
     outputs = net.forward(data, lengths)
 
     blackTrue.extend(target[:, 1].cpu().numpy())
@@ -244,16 +266,18 @@ with torch.no_grad():
 
     # see errors
     exampleLoss = testLoss(outputs, target)
-
+    
     errorsWhite = exampleLoss[:, 0].cpu().numpy()
-    whiteNorms = (target[:, 0] ** 2).cpu().numpy()
-
     errorsBlack = exampleLoss[:, 1].cpu().numpy()
-    blackNorms = (target[:, 1] ** 2).cpu().numpy()
+    
+    meanCheck = testLoss(test, target).cpu().numpy()
+    whiteNorms = meanCheck[:,0]
+
+    blackNorms = meanCheck[:,1]
 
     for j in range(10):
         print(f"label {target[j,:]} prediction: {outputs[j,:]}")
-
+        
 
 steps = np.linspace(0, 1, 100)
 total = whiteNorms.shape[0]
@@ -267,18 +291,20 @@ whiteAvgCounts = [np.count_nonzero(whiteNorms <= tol*whiteMax) / total for tol i
 blackAvgCounts = [np.count_nonzero(blackNorms <= tol*blackMax) / total for tol in steps]
 
 plt.figure()
-plt.plot(steps, whiteCounts, "-")
-plt.plot(steps, whiteAvgCounts, "-.")
-plt.xlabel("Unnormalized Error")
-plt.ylabel("Percentage of Examples Less than Unnormalized Error")
+plt.plot(steps, whiteCounts, "-", label="prediction")
+plt.plot(steps, whiteAvgCounts, "-.", label="error from using mean")
+plt.legend()
+plt.xlabel("Normalized Error")
+plt.ylabel("Percentage of Examples Less than Normalized Error")
 plt.title("White Elo Prediction Tolerance Curve")
 plt.savefig("white_tolerance.png")
 
 plt.figure()
-plt.plot(steps, blackCounts, "-")
-plt.plot(steps, blackAvgCounts, "-.")
-plt.xlabel("Unnormalized Error")
-plt.ylabel("Percentage of Examples Less than Unnormalized Error")
+plt.plot(steps, blackCounts, "-", label="prediction")
+plt.plot(steps, blackAvgCounts, "-.", label="error from using mean")
+plt.xlabel("Nnormalized Error")
+plt.legend()
+plt.ylabel("Percentage of Examples Less than Normalized Error")
 plt.title("Black Elo Prediction Tolerance Curve")
 plt.savefig("black_tolerance.png")
 

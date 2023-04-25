@@ -5,6 +5,8 @@ import numpy as np
 import threading
 import math
 
+torch.set_default_tensor_type(torch.FloatTensor)
+
 def parallel_range(id, nworkers, start, stop):
     
     local = (stop - start + 1) // nworkers
@@ -99,7 +101,7 @@ class PolarsDataset(torch.utils.data.Dataset):
 
 
 class PolarsDataStream(torch.utils.data.IterableDataset):
-    def __init__(self, filename, N, batch_size=5*2048) -> None:
+    def __init__(self, filename, N, batch_size=1024) -> None:
         super().__init__()
         self.lazyframe = pl.scan_parquet(filename, parallel='none')
         self.N = N
@@ -126,29 +128,12 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         
         return mapped_itr
 
-    # def __next__(self):
-    #     # out of data, get more
-    #     data_index = self.index % self.batch_size
-                
-    #     if data_index == 0:
-    #         self.task.join()
-    #         self.boards = self.new_boards
-    #         self.labels = self.new_labels
-    #         self.lengths = self.new_lengths
-            
-    #         print(f"Dataset setting up new batch")
-    #         self.offset += self.batch_size
-    #         # wrap around
-    #         if self.offset >= self.N:
-    #             self.offset = 0
-                
-    #         self.task = threading.Thread(target=self.setupNextBatch)
-    #         self.task.start()
-           
-            
-    #     self.index += self.batch_size
+    def normalizationParams(self):
+        elos = self.lazyframe.select("white_elo", "black_elo")
         
-    #     return self.boards, self.labels, self.lengths
+        mean = elos.mean().collect()
+        std = elos.std().collect()
+        print(mean, std)
 	
     def getBatch(self, idx):
         offset = idx*self.worker_batch_size
