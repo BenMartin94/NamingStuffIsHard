@@ -223,4 +223,42 @@ class PolarsDataStream(torch.utils.data.IterableDataset):
         
         self.new_boards = conv_sequence.view(-1, maxLen, 18, 8, 8)
         self.new_lengths = lengths   
+
+
+if __name__ == "__main__":
+	import matplotlib.pyplot as plt
+	lazyframe =  pl.scan_parquet("/Users/bantingl/Documents/LichessData/BoardInfoFrameLarge.parquet")
+	elos = lazyframe.select("white_elo", "black_elo").mean()
 	
+	data_mean = lazyframe.select("white_elo").mean(),
+	data_std = lazyframe.select("white_elo").std()
+    
+	# mean and std we want
+	mean = 2250
+	std = 500
+	height = lazyframe.select(
+            pl.col("white_elo").len()
+		).collect().to_numpy()[0,0]
+	lazyframe = lazyframe.with_columns(
+            [
+				np.divide(np.subtract(pl.col("white_elo"), mean), std).alias("z_score"),
+                pl.lit(np.random.randn(height)).alias("z_sample")
+			]
+	)
+	sampledFrame = lazyframe.filter(
+				(pl.col("z_sample").abs() > pl.col("z_score").abs()) | (pl.col("z_score") > 0)
+			)
+	
+	sampledFrame.collect().write_parquet("/Users/bantingl/Documents/LichessData/BoardFrameSampled.parquet")
+        
+	elos = sampledFrame.select(
+            pl.col(["white_elo", "black_elo"])
+	).collect().to_numpy()
+	
+	print(f"sample mean: {np.mean(elos, 0)}")
+	print(f"sample std: {np.std(elos, 0)}")
+	print(f"Number of samples {len(elos)}")
+	plt.hist2d(elos[:,0], elos[:,1],bins=(50,50))
+	plt.xlabel("white")
+	plt.ylabel("black")
+	plt.savefig("hist.png")

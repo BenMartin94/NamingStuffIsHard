@@ -5,8 +5,10 @@ import torch.nn
 import torch.utils.data
 import sys
 import matplotlib.pyplot as plt
+import matplotlib.patches
 from PolarsData import PolarsDataset, PolarsDataStream
-from KaggleData import loadKaggleData
+from KaggleData import loadKaggleData, loadKaggleTestSet
+import pickle
 
 # assumes batch_first=true
 class ChessBoardDataset(torch.utils.data.TensorDataset):
@@ -42,57 +44,24 @@ class ChessBoardDataset(torch.utils.data.TensorDataset):
             self.lengths[index],
         )
 
-
-class SequenceDataset(torch.utils.data.TensorDataset):
-    def __init__(self, X, y, lengths):
-        super().__init__(X, y)
-        self.lengths = lengths
-        self.X = X
-        self.y = y
-
-    def __getitem__(self, index):
-        data, target = super().__getitem__(index)
-        lengths = self.lengths[index]
-        return data, target, lengths
-
-    def __len__(self):
-        return len(self.lengths)
-
-
 class EloPredictionNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.hidden_size = 512
-
-        # self.features1 = torch.nn.Sequential(
-        #     torch.nn.Conv2d(18, 96, (4, 4)),
-        #     torch.nn.ReLU(),  # 4 x 4
-        #     torch.nn.BatchNorm2d(96),
-        #     torch.nn.Conv2d(96, 256, (4, 4)),
-        #     torch.nn.ReLU(),  # 1 x 1
-        #     torch.nn.BatchNorm2d(256),
-        #     torch.nn.Conv2d(256, 64, (1, 1)),
-        #     torch.nn.ReLU(),  # 4x4
-        #     torch.nn.BatchNorm2d(64),
-        # )
-
+        
         self.features_deep = torch.nn.Sequential(
-            torch.nn.Conv2d(18, 96, (3, 3)),
+            torch.nn.Conv2d(18, 64, (3, 3)),
             torch.nn.ReLU(),  # 6 x 6
-            torch.nn.BatchNorm2d(96),
-            torch.nn.Dropout2d(0.1),
-            torch.nn.Conv2d(96, 256, (3, 3)),
+            torch.nn.Dropout2d(0.2),
+            torch.nn.Conv2d(64, 128, (3, 3)),
             torch.nn.ReLU(),  # 4 x 4
-            torch.nn.BatchNorm2d(256),
-            torch.nn.Dropout2d(0.1),
-            torch.nn.Conv2d(256, 384, (3, 3)),
+            torch.nn.Dropout2d(0.2),
+            torch.nn.Conv2d(128, 256, (3, 3)),
             torch.nn.ReLU(),  # 2 x 2
-            torch.nn.BatchNorm2d(384),
-            torch.nn.Dropout2d(0.1),
-            torch.nn.Conv2d(384, 512, (2, 2)),
+            torch.nn.Dropout2d(0.2),
+            torch.nn.Conv2d(256, 512, (2, 2)),
             torch.nn.ReLU(),  # 1 x 1
-            torch.nn.BatchNorm2d(512),
-            torch.nn.Dropout2d(0.1)
+            torch.nn.Dropout2d(0.2)
         )
 
         self.rnn = torch.nn.LSTM(
@@ -104,8 +73,7 @@ class EloPredictionNet(torch.nn.Module):
         self.eloScorer = torch.nn.Sequential(
             torch.nn.Linear(2 * self.hidden_size, self.hidden_size),
             torch.nn.ReLU(),
-            torch.nn.BatchNorm1d(self.hidden_size),
-            torch.nn.Dropout1d(0.1),
+            torch.nn.Dropout1d(0.2),
             torch.nn.Linear(self.hidden_size, 2),
         )
 
@@ -114,12 +82,12 @@ class EloPredictionNet(torch.nn.Module):
         shape = yn.size()
         batch = shape[0]
         seq = shape[1]
-
+        
         # flatten batch and sequence for conv2d
         yn = torch.flatten(yn, start_dim=0, end_dim=1)
         yn = yn.view(batch * seq, -1, 8, 8)
         yn = self.features_deep(yn)
-
+        
         # unflatten
         yn = yn.view(batch, seq, -1)
 
@@ -150,67 +118,149 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # training parameters
 validationPercent = 0.05
 batchSize = 384
-lr = 1e-3
+epochs = 50
+lr = 1e-4
 trainModel = True
-loadModel = True
-saveModel = False
+loadModel = False
+saveModel = True
+testModel = False
+testExample = False
 
-# N = 2_974_929
-# N = 18_387
-# N = 198_285
-# data = "/Users/bantingl/Documents/LichessData/BoardInfoFrameMedLarge.parquet"
-# # dataset = PolarsDataset(data, N, batch_size=batchSize)
+N = 285920 # BoardFrameSampled
+data = "/Users/bantingl/Documents/LichessData/BoardFrameSampled.parquet"
+LOAD_PATH = "ConvolutionalEloModel_Deep_L1_Dropout_Kaggle.state"
+SAVE_PATH = "ConvolutionalEloModel_Deep_L1_Dropout_Kaggle.state"
+
 # dataset = PolarsDataStream(data, N, batch_size=batchSize)
-# dataset.normalizationParams()
 # dataloader = torch.utils.data.DataLoader(
-#     dataset, batch_size=None, shuffle=False, num_workers=24, persistent_workers=True, pin_memory=True
+#     dataset, batch_size=None, shuffle=False, num_workers=32, persistent_workers=True, pin_memory=True
 # )
 # validationloader = torch.utils.data.DataLoader(
-#      dataset, batch_size=None, shuffle=False, num_workers=1
+#     dataset, batch_size=None, shuffle=False, num_workers=1
 # )
 # dataset.normalizationParams()
+
+if testExample:
+	net = EloPredictionNet().to(device)
+	checkpoint = torch.load(LOAD_PATH)
+	net.load_state_dict(checkpoint["model_state_dict"])
+	net.eval()
+	games = []
+	lengths = []
+	labels = []
+	files = [
+        "Martin_vs_Martin.pgn.encoded",
+        "Lucas_vs_Martin.pgn.encoded",
+        "BenGame.pgn.encoded",
+        "Ian_Game1.pgn.encoded",
+        "Ian_Game2.pgn.encoded",
+        "Ian_Game3.pgn.encoded"
+	]
+	for f in files:
+		with open(f, "rb") as file:
+			game = pickle.load(file)
+			game = torch.tensor(game)
+			games.append(game)
+			lengths.append(game.shape[0])
+			labels.append([0,0])
+	X = torch.nn.utils.rnn.pad_sequence(games, batch_first=True)
+	dataset = ChessBoardDataset(X, torch.tensor(labels), lengths)
+	data = []
+	lens = []
+	for i in range(6):
+		d, _, l = dataset[i]
+		data.append(d.unsqueeze(0))
+		lens.append(l)
+	data = torch.vstack(data).to(device)
+	predict = net.forward(data, lengths)
+        
+	mean = torch.tensor([2246.8511, 2241.8914]).to(device)
+	std = torch.tensor([268.3849, 270.9836]).to(device)
+	print(predict*std + mean)
+	exit()
+        
+if testModel:
+	Xtest, lengthsTest, targetMean, targetStd = loadKaggleTestSet("KaggleData/dataframe.pickle.zip")
+	ytest = torch.zeros((25000, 2)).to(device)
+	testSet = ChessBoardDataset(Xtest, ytest, lengthsTest)
+	testLoader = torch.utils.data.DataLoader(
+		testSet, batch_size=batchSize
+	)
+	print(targetMean)
+	print(targetStd)
+	targetMean = targetMean.to(device)
+	targetStd = targetStd.to(device)
+	
+	net = EloPredictionNet().to(device)
+	checkpoint = torch.load(LOAD_PATH)
+	net.load_state_dict(checkpoint["model_state_dict"])
+	net.eval()
+	with torch.no_grad():
+		events = []
+		white_predict = []
+		black_predict = []
+		id = 25001
+		for data, _, lengths in testLoader:
+			data = data.to(device)
+            
+			predict = net.forward(data, lengths)
+			predict = predict * targetStd + targetMean
+			predict = predict.long().cpu().numpy()
+			          
+			for i in range(predict.shape[0]):
+				events.append(id)
+				white_predict.append(predict[i, 0])
+				black_predict.append(predict[i, 1])
+                                
+				id +=1
+		df = pd.DataFrame({
+                    "Event" : events,
+                    "WhiteElo" : white_predict,
+                    "BlackElo" : black_predict
+                    })
+		df.to_csv("Predictions.csv", index=False)
+	exit()
+
 
 # load kaggle data
 X, y, lengths = loadKaggleData("KaggleData/dataframe.pickle.zip")
 fullset = ChessBoardDataset(X, y, lengths)
 dataset, validationset = torch.utils.data.random_split(fullset, [0.95, 0.05])
 dataloader = torch.utils.data.DataLoader(
-    dataset, batch_size=batchSize, num_workers=2, persistent_workers=True, pin_memory=True, shuffle=True
+    dataset, batch_size=batchSize, num_workers=4, persistent_workers=True, shuffle=True
 )
 validationloader = torch.utils.data.DataLoader(
     validationset, batch_size=batchSize,
 )
-kaggleMean = torch.mean(y, dim=0).unsqueeze(0).to(device)
-kaggleStd = torch.std(y, dim=0).unsqueeze(0).to(device)
-# exit()
-
-print(kaggleMean)
-print(kaggleStd)
+targetMean = torch.mean(y, dim=0).unsqueeze(0).to(device)
+targetStd = torch.std(y, dim=0).unsqueeze(0).to(device)
 
 net = EloPredictionNet().to(device)
-criterion = torch.nn.HuberLoss()
+criterion = torch.nn.L1Loss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
-
+scheduler = torch.optim.lr_scheduler.StepLR(optim, 1000, 0.5)
 bestLoss = float("inf")
-PATH = "ConvolutionalEloModel_BN_Deep_Huber_Dropout.state"
 
 if loadModel:
-    checkpoint = torch.load(PATH)
+    checkpoint = torch.load(LOAD_PATH)
     net.load_state_dict(checkpoint["model_state_dict"])
     optim.load_state_dict(checkpoint["optimizer_state_dict"])
-
-
+    # scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    # bestLoss = checkpoint["best_loss"]
+    
 epochLoss = 0.0
 i = 0
+alpha = 0.1
+movingAverage = 0.0
+
 if trainModel:
 	net.train()
-	for outer in range(2):
+	for outer in range(epochs):
 		for data, target, lengths in dataloader:
 			data, target = data.to(device), target.to(device)
 			
 			# reduce size of predictions
-			# target = (target - 1600) / 370
-			target = (target - kaggleMean) / kaggleStd
+			target = (target - targetMean) / targetStd
                         
 			optim.zero_grad()
 
@@ -222,21 +272,41 @@ if trainModel:
 			optim.step()
 			epochLoss += loss.item()
 
-			print(f"nBatches: {i} batch loss: {epochLoss} ")
+			movingAverage = alpha*epochLoss + (1-alpha)*movingAverage
+			print(f"[{outer:2d}, {i:4d}] moving average: {movingAverage:.3e} batch loss: {epochLoss:.3e} ")
 			epochLoss = 0.0
 			i += 1
-			if saveModel:
-				torch.save(
-					{
-						"model_state_dict": net.state_dict(),
-						"optimizer_state_dict": optim.state_dict(),
-					},
-					PATH,
-				)
+			
+			scheduler.step()
 
+			# validate
+			if (i+1) % 100 == 0:
+				net.eval()
+				validationLoss = 0.0
+				for data, target, lengths in validationloader:
+					data, target = data.to(device), target.to(device)
+					target = (target - targetMean) / targetStd
+				
+					outputs = net.forward(data, lengths)
+					validationLoss += criterion(outputs, target).item()
+				print(f"VALIDATING at epoch: {i} test loss: {validationLoss}")
+                                
+				if validationLoss < bestLoss:
+					bestLoss = validationLoss
+					if saveModel:
+						torch.save(
+							{
+								"model_state_dict": net.state_dict(),
+								"optimizer_state_dict": optim.state_dict(),
+								"scheduler_state_dict" : scheduler.state_dict(),
+								"best_loss" : bestLoss
+							},
+							SAVE_PATH)
+				net.train()
+        
 # validate model
 net.eval()
-testLoss = torch.nn.HuberLoss(reduction="none")
+testLoss = torch.nn.L1Loss(reduction="none")
 
 black = []
 white = []
@@ -253,7 +323,7 @@ with torch.no_grad():
         data, target = data.to(device), target.to(device)
         break
     # reduce size of predictions
-    target = (target - 1530) / 370
+    target = (target - targetMean) / targetStd
     test = torch.zeros_like(target).to(device)
     
     outputs = net.forward(data, lengths)
@@ -302,113 +372,46 @@ plt.savefig("white_tolerance.png")
 plt.figure()
 plt.plot(steps, blackCounts, "-", label="prediction")
 plt.plot(steps, blackAvgCounts, "-.", label="error from using mean")
-plt.xlabel("Nnormalized Error")
+plt.xlabel("Normalized Error")
 plt.legend()
 plt.ylabel("Percentage of Examples Less than Normalized Error")
 plt.title("Black Elo Prediction Tolerance Curve")
 plt.savefig("black_tolerance.png")
 
-plt.figure()
-plt.scatter(whiteTrue, white)
-plt.title("White Elo")
-plt.xlabel("True")
-plt.ylabel("Prediction")
+fig, ax = plt.subplots()
+rect = matplotlib.patches.Rectangle((0,0), 2.5, 1.5, color='tab:green', alpha=0.5)
+ax.add_patch(rect)
+
+rect = matplotlib.patches.Rectangle((0,0), -3.5, -1.5, color='tab:green', alpha=0.5)
+ax.add_patch(rect)
+
+rect = matplotlib.patches.Rectangle((0,0), -3.5, 1.5, color='tab:red', alpha=0.5)
+ax.add_patch(rect)
+
+rect = matplotlib.patches.Rectangle((0,0), 2.5, -1.5, color='tab:red', alpha=0.5)
+ax.add_patch(rect)
+
+ax.scatter(whiteTrue, white)
+ax.set_title("White Elo")
+ax.set_xlabel("True")
+ax.set_ylabel("Prediction")
 plt.savefig("white_elo_scatter.png")
 
-plt.figure()
-plt.scatter(blackTrue, black)
-plt.title("Black Elo")
-plt.xlabel("True")
-plt.ylabel("Prediction")
+fig, ax = plt.subplots()
+rect = matplotlib.patches.Rectangle((0,0), 2.5, 1.5, color='tab:green', alpha=0.5)
+ax.add_patch(rect)
+
+rect = matplotlib.patches.Rectangle((0,0), -3.5, -1.5, color='tab:green', alpha=0.5)
+ax.add_patch(rect)
+
+rect = matplotlib.patches.Rectangle((0,0), -3.5, 1.5, color='tab:red', alpha=0.5)
+ax.add_patch(rect)
+
+rect = matplotlib.patches.Rectangle((0,0), 2.5, -1.5, color='tab:red', alpha=0.5)
+ax.add_patch(rect)
+
+ax.scatter(blackTrue, black)
+ax.set_title("Black Elo")
+ax.set_xlabel("True")
+ax.set_ylabel("Prediction")
 plt.savefig("black_elo_scatter.png")
-exit()
-
-# test model
-black = []
-white = []
-
-blackAvg = []
-whiteAvg = []
-
-avg = torch.mean(normLabels, dim=0).to(device)
-
-testWhite = []
-predictWhite = []
-
-net.eval()
-testLoss = torch.nn.MSELoss(reduction="none")
-with torch.no_grad():
-    for i, (data, target, lengths) in enumerate(validationLoader):
-        data, target = data.to(device), target.to(device)
-
-        outputs = net.forward(data, lengths)
-
-        for j in range(10):
-            print(f"Label: {target[j,:]} prediction: {outputs[j, :]}")
-
-        errors = testLoss(outputs, target)
-        black.extend(errors[:, 1])
-        white.extend(errors[:, 0])
-
-        zeros = torch.zeros_like(target).to(device)
-        avgErrors = testLoss(zeros, target)
-
-        blackAvg.extend(avgErrors[:, 1])
-        whiteAvg.extend(avgErrors[:, 0])
-
-        testWhite.extend(target[:, 0].cpu())
-        predictWhite.extend(outputs[:, 0].cpu())
-
-plt.figure()
-plt.scatter(testWhite, predictWhite)
-plt.plot([-2, 2], [-2, 2], "k--")
-plt.title("White Elo")
-plt.xlabel("True")
-plt.ylabel("Prediction")
-plt.savefig("scatter.png")
-
-# create tolerance curves
-white = torch.tensor(white)
-black = torch.tensor(black)
-
-whiteAvg = torch.tensor(whiteAvg)
-blackAvg = torch.tensor(blackAvg)
-
-whiteMax = torch.max(white)
-blackMax = torch.max(black)
-
-whiteAvgMax = torch.max(whiteAvg)
-blackAvgMax = torch.max(blackAvg)
-
-whiteMax = torch.max(whiteMax, whiteAvgMax)
-blackMax = torch.max(blackMax, blackAvgMax)
-
-white /= whiteMax
-black /= blackMax
-
-whiteAvg /= whiteMax
-blackAvg /= blackMax
-
-steps = torch.linspace(0, 1.0, 100)
-total = white.size()[0]
-whiteCounts = [torch.count_nonzero(white <= tol) / total for tol in steps]
-blackCounts = [torch.count_nonzero(black <= tol) / total for tol in steps]
-
-whiteAvgCounts = [torch.count_nonzero(whiteAvg <= tol) / total for tol in steps]
-blackAvgCounts = [torch.count_nonzero(blackAvg <= tol) / total for tol in steps]
-
-plt.figure()
-plt.plot(steps, whiteCounts, "-")
-plt.plot(steps, whiteAvgCounts, "-.")
-plt.xlabel("Normalized Error")
-plt.ylabel("Percentage of Examples Less than Normalized Error")
-plt.title("White Elo")
-plt.savefig("white.png")
-
-plt.figure()
-plt.plot(steps, blackCounts, "-")
-plt.plot(steps, blackAvgCounts, "-.")
-plt.xlabel("Normalized Error")
-plt.ylabel("Percentage of Examples Less than Normalized Error")
-plt.title("Black Elo")
-plt.savefig("black.png")
