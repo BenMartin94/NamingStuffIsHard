@@ -11,6 +11,8 @@ import chess.svg
 from IPython.core.display import SVG
 from IPython.core.display_functions import display
 from KaggleData.processKaggleData import decodeBoard
+from tqdm.auto import tqdm
+
 # device to use
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device = 'cpu'34
@@ -22,34 +24,49 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 neginf = -sys.maxsize - 1
 
 # number of examples to train with
-N = 2000
+gamesToGrab = 50000
+positionsPerGame = 5
 
 df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
 
-gameTensors = list(map(torch.Tensor, df["boards"][0:N]))
+gameTensors = list(map(torch.Tensor, df["boards"][0:gamesToGrab]))
 lengths = torch.tensor(list(map(len, gameTensors)))
 boardPos = []
-for i in range(N):
+for i in range(gamesToGrab):
     # just add a random position from each game
     game = gameTensors[i]
     numMoves = game.size()[0]
-    moveToSel = np.random.randint(0, numMoves, 1)
-    boardPos.append(game[moveToSel, :].squeeze())
+    if numMoves < 5:
+        continue
+    # for j in range(positionsPerGame):
+    #     #moveToSel = np.random.randint(0, numMoves, 1)
+    #     biggerVal=random.randint(1, (numMoves-1)**2)
+    #     moveToSel = int(round((biggerVal)**0.5))
+    #     boardPos.append(game[moveToSel, :].squeeze())
+    for j in range(numMoves - 1):
+        boardPos.append(game[j+1, :].squeeze())
+
+N = len(boardPos)
+print("Training on " + str(N) + " Board Positions")
 
 # convert board pos to a tensor now
 boardTensors = torch.stack(boardPos)
+# zscore the board tensors
+mean = torch.mean(boardTensors, dim=0)
+std = torch.std(boardTensors, dim=0)
+boardTensors = (boardTensors - mean) / std
 
 
 class Generator(torch.nn.Module):
     def __init__(self, latentSize):
         super().__init__()
         # make a generator now with output being 1x72
-        self.conv1 = torch.nn.Conv2d(1, 8, (3, 3), padding='same')
+        self.conv1 = torch.nn.Conv2d(1, 32, (3, 3), padding='same')
         self.relu = torch.nn.ReLU()
-        self.BN1 = torch.nn.BatchNorm2d(8)
-        self.conv2 = torch.nn.Conv2d(8, 16, (3, 3), padding='same')
-        self.BN2 = torch.nn.BatchNorm2d(16)
-        self.conv3 = torch.nn.Conv2d(16, 1, (3, 3), padding='same')
+        self.BN1 = torch.nn.BatchNorm2d(32)
+        self.conv2 = torch.nn.Conv2d(32, 128, (3, 3), padding='same')
+        self.BN2 = torch.nn.BatchNorm2d(128)
+        self.conv3 = torch.nn.Conv2d(128, 1, (3, 3), padding='same')
         self.BN3 = torch.nn.BatchNorm2d(1)
         self.dense = torch.nn.Linear(latentSize, 72)
 
@@ -107,18 +124,20 @@ class Discriminator(torch.nn.Module):
 
 # parameters for training
 lr = 1e-4
-nEpochs = 75
-batchSize = 64
+nEpochs = 100
+batchSize = 4096
 validationPercent = 0.1
 loadModel = False
 
 if loadModel:
-    gen = torch.load("gen.state")
-    disc = torch.load("disc.state")
-    generator = Generator(100).to(device)
-    discriminator = Discriminator().to(device)
-    generator.load_state_dict(gen['model_state_dict'])
-    discriminator.load_state_dict(disc['model_state_dict'])
+    # gen = torch.load("gen.state")
+    # disc = torch.load("disc.state")
+    # generator = Generator(100).to(device)
+    # discriminator = Discriminator().to(device)
+    # generator.load_state_dict(gen['model_state_dict'])
+    # discriminator.load_state_dict(disc['model_state_dict'])
+    generator = torch.load("gen.pth")
+    discriminator = torch.load("disc.pth")
 
 else:
     # make the generator and discriminator
@@ -134,9 +153,9 @@ else:
     loss = torch.nn.BCELoss()
     mseLoss = torch.nn.MSELoss()
 
-    for epoch in range(nEpochs):
+    for epoch in tqdm(range(nEpochs), desc="Epochs", colour="purple"):
         # train the discriminator
-        for i in range(100):
+        for i in tqdm(range(200), desc="Discriminator", colour="green"):
             # sample some data
             idx = np.random.randint(0, N, batchSize)
             data = boardTensors[idx, :].to(device)
@@ -156,7 +175,7 @@ else:
             discOpt.step()
 
         # train the generator
-        for i in range(100):
+        for i in tqdm(range(200), desc="Generator", colour="green"):
             # generate some fake data
             noise = torch.randn(batchSize, 100).to(device)
             fake = generator(noise)
@@ -189,45 +208,41 @@ else:
         print("Epoch: %d, Gen Loss: %f, Disc Loss: %f" % (epoch, genLoss, discLoss))
 
 
-    torch.save({
-                'epoch': nEpochs,
-                'model_state_dict': generator.state_dict(),
-                'optimizer_state_dict': genOpt.state_dict(),
+    # torch.save({
+    #             'epoch': nEpochs,
+    #             'model_state_dict': generator.state_dict(),
+    #             'optimizer_state_dict': genOpt.state_dict(),
 
-                }, 'gen.state')
+    #             }, 'gen.state')
 
-    torch.save({
-        'epoch': nEpochs,
-        'model_state_dict': discriminator.state_dict(),
-        'optimizer_state_dict': discOpt.state_dict(),
+    # torch.save({
+    #     'epoch': nEpochs,
+    #     'model_state_dict': discriminator.state_dict(),
+    #     'optimizer_state_dict': discOpt.state_dict(),
 
-    }, 'disc.state')
+    # }, 'disc.state')
+    torch.save(generator, "gen.pth")
+    torch.save(discriminator, "disc.pth")
 
 
 # now confirm the discriminator is better than random chance
 with torch.no_grad():
-    for i in range(10):
-        board = np.random.randint(-6, 6, (1,72))
-        board = torch.tensor(board, dtype=torch.float32)
-        isFake = discriminator(board).squeeze()
-
-        realBoard = boardTensors[i:i+1, :]
-
-        isReal = discriminator(realBoard).squeeze()
-        print("Should be close to 1 then 0")
-        print(isReal, isFake)
+    
 
     # lets take a look at the generator now
     for i in range(10):
-        noise = torch.randn(1, 100)
+        noise = torch.randn(1, 100).to(device)
         givenBoard = generator(noise)
         # waht did the discriminator think of this
-        isFake = discriminator(givenBoard).squeeze()
+        isFake = discriminator(givenBoard)
         print("Should be close to 1")
         print(isFake)
         # now lets decode this board
+        givenBoard = givenBoard.cpu()
+        givenBoard = givenBoard * std + mean
 
         givenBoard = givenBoard.numpy()
+        # reverse the zscore
         givenBoard = givenBoard.round(0)
         actualBoard = decodeBoard(givenBoard)
         # create a board

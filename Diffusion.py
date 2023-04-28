@@ -18,6 +18,7 @@ import cairosvg
 import imageio.v2 as imageio
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(device)
 def sinusoidal_embedding(n, d):
     # Returns the standard positional embedding
     embedding = torch.zeros(n, d)
@@ -29,7 +30,7 @@ def sinusoidal_embedding(n, d):
 
     return embedding
 class DDPM(torch.nn.Module):
-    def __init__(self, network, n_steps=200, min_beta=10 ** -4, max_beta=0.02, device=None, vectorLength=72):
+    def __init__(self, network, n_steps=5000, min_beta=10 ** -4, max_beta=0.002, device=None, vectorLength=72, mean=0, std=1):
         super(DDPM, self).__init__()
         self.n_steps = n_steps
         self.device = device
@@ -39,6 +40,8 @@ class DDPM(torch.nn.Module):
             device)  # Number of steps is typically in the order of thousands
         self.alphas = 1 - self.betas
         self.alpha_bars = torch.tensor([torch.prod(self.alphas[:i + 1]) for i in range(len(self.alphas))]).to(device)
+        self.std = std
+        self.mean = mean
 
     def forward(self, x0, t, eta):
         n, l = x0.shape
@@ -65,7 +68,12 @@ class DDPM(torch.nn.Module):
             svglists[i] = []
         with torch.no_grad():
             xN = torch.randn(n, self.vectorLength).to(self.device)
-            for idx, t in enumerate(list(range(self.n_steps))[::-1]):
+            # create a 100 frame gif if needed
+            if writeToGif:
+                # we have nsteps along the diffusion process
+                # we want to create a gif with 10 frames
+                multiple = self.n_steps // 10
+            for idx, t in enumerate(tqdm(list(range(self.n_steps))[::-1], desc='Creating Boards', colour='red')):
                 times = (torch.ones(n, 1) * t).to(self.device).long()
                 noisePred = self.noisePred(xN, times)
                 alphaT = self.alphas[t]
@@ -73,14 +81,15 @@ class DDPM(torch.nn.Module):
 
                 xN = (1 / alphaT.sqrt()) * (xN - (1 - alphaT) / (1 - alphaTBar).sqrt() * noisePred)
 
-                if writeToGif:
+                if writeToGif and idx % multiple == 0:
                     for i in range(n):
-                        temp = xN[i:i+1,:]
+                        temp = xN[i:i+1,:].to('cpu')
                         # reverse z score
-                        temp = temp*std + mean
+                        temp = temp*self.std + self.mean
                         temp = torch.round(temp, decimals=0)
                         board = decodeBoard(temp)
                         svg = chess.svg.board(board=board, size=400)
+                        svg = cairosvg.svg2png(bytestring=svg)
                         svglists[i].append(svg)
 
                 if t>0:
@@ -90,13 +99,153 @@ class DDPM(torch.nn.Module):
                     xN = xN + sigmaT * z
 
             if writeToGif:
-                for i in range(n):
+                for i in tqdm(range(n), desc='Saving Gifs', colour='green'):
                     frames = []
-                    for svg in svglists[i]:
-                        png = cairosvg.svg2png(bytestring=svg)
-                        frames.append(imageio.imread(png))
-                    imageio.mimsave("./GeneratedBoards/board" + str(i) + ".gif", frames, fps=10)
+                    for svg in tqdm(svglists[i], desc='Saving Frame', colour='blue'):
+                        #png = cairosvg.svg2png(bytestring=svg)
+                        frames.append(imageio.imread(svg))
+                    imageio.mimsave("./GeneratedBoards/board" + str(i) + ".gif", frames, fps=1)
+
+            # lets enforce some constraints here
+            # start by making sure each side has a king
+            xN = xN.to('cpu')
+            xN = xN*self.std + self.mean
+
+            for i in range(n):
+                temp = torch.round(xN[i, :64], decimals=0)
+                # set to 0 if greater than 7 in magnitude
+                temp[abs(temp) > 7] = 0
+                whiteKings = torch.sum(temp == 6)
+                if whiteKings == 0:
+                    temp[torch.argmax(temp)] = 6
+                elif whiteKings > 1:
+                    # set all to 0 except the first one
+                    temp[temp == 6] = 0
+                    temp[torch.argmax(temp)] = 6
+                blackKings = torch.sum(temp == -6)
+                if blackKings == 0:
+                    temp[torch.argmin(temp)] = -6
+                elif blackKings > 1:
+                    # set all to 0 except the first one
+                    temp[temp == -6] = 0
+                    temp[torch.argmin(temp)] = -6
+                # now lets make sure that there arent more than 2 rooks, 2 bishops, 2 knights, 8 pawns per side
+                whiteRooks = torch.sum(temp == 4)
+                if whiteRooks > 2:
+                    # get the indices of the white rooks
+                    rookIndices = torch.where(temp == 4)[0]
+                    # set all but the first two to 0
+                    temp[rookIndices[2:]] = 0
+                blackRooks = torch.sum(temp == -4)
+                if blackRooks > 2:
+                    # get the indices of the white rooks
+                    rookIndices = torch.where(temp == -4)[0]
+                    # set all but the first two to 0
+                    temp[rookIndices[2:]] = 0
+                    
+                whiteBishops = torch.sum(temp == 3)
+                if whiteBishops > 2:
+                    # get the indices of the white rooks
+                    bishopIndices = torch.where(temp == 3)[0]
+
+                    lightSquareBishops = []
+                    darkSquareBishops = []
+                    for sq in bishopIndices:
+                        rank = sq % 8
+                        file = sq // 8
+                        if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                            lightSquareBishops.append(sq.item())
+                        else:
+                            darkSquareBishops.append(sq.item())
+                    # set all but the first two to 0
+
+                    #temp[bishopIndices[2:]] = 0
+                    if len(lightSquareBishops) > 1:
+                        temp[lightSquareBishops[1:]] = 0
+                    if len(darkSquareBishops) > 1:
+                        temp[darkSquareBishops[1:]] = 0
+                elif whiteBishops == 2:
+                    bishopIndices = torch.where(temp == 3)[0]
+                    lightSquareBishops = []
+                    darkSquareBishops = []
+                    for sq in bishopIndices:
+                        rank = sq % 8
+                        file = sq // 8
+                        if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                            lightSquareBishops.append(sq.item())
+                        else:
+                            darkSquareBishops.append(sq.item())
+                    if len(lightSquareBishops) == 2 or len(darkSquareBishops) == 2:
+                        # set all to 0 except the first one
+                        temp[bishopIndices[1:]] = 0
+
+                blackBishops = torch.sum(temp == -3)
+                if blackBishops > 2:
+                    # get the indices of the white rooks
+                    bishopIndices = torch.where(temp == -3)[0]
+                    lightSquareBishops = []
+                    darkSquareBishops = []
+                    for sq in bishopIndices:
+                        rank = sq % 8
+                        file = sq // 8
+                        if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                            lightSquareBishops.append(sq.item())
+                        else:
+                            darkSquareBishops.append(sq.item())
+                    # set all but the first two to 0
+                    #temp[bishopIndices[2:]] = 0
+                    if len(lightSquareBishops) > 1:
+                        temp[lightSquareBishops[1:]] = 0
+                    if len(darkSquareBishops) > 1:
+                        temp[darkSquareBishops[1:]] = 0
+                elif blackBishops == 2:
+                    bishopIndices = torch.where(temp == -3)[0]
+                    lightSquareBishops = []
+                    darkSquareBishops = []
+                    for sq in bishopIndices:
+                        rank = sq % 8
+                        file = sq // 8
+                        if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                            lightSquareBishops.append(sq.item())
+                        else:
+                            darkSquareBishops.append(sq.item())
+                    if len(lightSquareBishops) == 2 or len(darkSquareBishops) == 2:
+                        # set all to 0 except the first one
+                        temp[bishopIndices[1:]] = 0
+
+                whiteKnights = torch.sum(temp == 2)
+                if whiteKnights > 2:
+                    # get the indices of the white rooks
+                    knightIndices = torch.where(temp == 2)[0]
+                    # set all but the first two to 0
+                    temp[knightIndices[2:]] = 0
+                blackKnights = torch.sum(temp == -2)
+                if blackKnights > 2:
+                    # get the indices of the white rooks
+                    knightIndices = torch.where(temp == -2)[0]
+                    # set all but the first two to 0
+                    temp[knightIndices[2:]] = 0
+
+                whitePawns = torch.sum(temp == 1)
+                if whitePawns > 8:
+                    # get the indices of the white rooks
+                    pawnIndices = torch.where(temp == 1)[0]
+                    # set all but the first two to 0
+                    temp[pawnIndices[8:]] = 0
+                blackPawns = torch.sum(temp == -1)
+                if blackPawns > 8:
+                    # get the indices of the white rooks
+                    pawnIndices = torch.where(temp == -1)[0]
+                    # set all but the first two to 0
+                    temp[pawnIndices[8:]] = 0
+                # lets make sure there are no pawns on the first rank
+                temp[0:8] = torch.where(abs(temp[0:8]) == 1, torch.zeros(8), temp[0:8])
+                # lets make sure there are no pawns on the last rank
+                temp[56:64] = torch.where(abs(temp[56:64]) == 1, torch.zeros(8), temp[56:64])
+
+                xN[i, :64] = temp
             return xN
+                
 
     def createFromReal(self, x0, t):
         # x0 is the initial state
@@ -104,6 +253,7 @@ class DDPM(torch.nn.Module):
         T = t
         with torch.no_grad():
             xN = self.forward(x0, t, None)
+            noised = xN
             # now weve noised it up, so lets come back from noise
             for idx, t in enumerate(list(range(T))[::-1]):
                 times = (torch.ones(1, 1) * t).to(self.device).long()
@@ -117,12 +267,149 @@ class DDPM(torch.nn.Module):
                     betaT = self.betas[t]
                     sigmaT = betaT.sqrt()
                     xN = xN + sigmaT * z
-            return xN
+
+            xN = xN.to('cpu')
+            xN = xN*self.std + self.mean
+
+            temp = torch.round(xN[0,:64], decimals=0)
+            # set to 0 if greater than 7 in magnitude
+            temp[abs(temp) > 7] = 0
+            whiteKings = torch.sum(temp == 6)
+            if whiteKings == 0:
+                temp[torch.argmax(temp)] = 6
+            elif whiteKings > 1:
+                # set all to 0 except the first one
+                temp[temp == 6] = 0
+                temp[torch.argmax(temp)] = 6
+            blackKings = torch.sum(temp == -6)
+            if blackKings == 0:
+                temp[torch.argmin(temp)] = -6
+            elif blackKings > 1:
+                # set all to 0 except the first one
+                temp[temp == -6] = 0
+                temp[torch.argmin(temp)] = -6
+            # now lets make sure that there arent more than 2 rooks, 2 bishops, 2 knights, 8 pawns per side
+            whiteRooks = torch.sum(temp == 4)
+            if whiteRooks > 2:
+                # get the indices of the white rooks
+                rookIndices = torch.where(temp == 4)[0]
+                # set all but the first two to 0
+                temp[rookIndices[2:]] = 0
+            blackRooks = torch.sum(temp == -4)
+            if blackRooks > 2:
+                # get the indices of the white rooks
+                rookIndices = torch.where(temp == -4)[0]
+                # set all but the first two to 0
+                temp[rookIndices[2:]] = 0
+                
+            whiteBishops = torch.sum(temp == 3)
+            if whiteBishops > 2:
+                # get the indices of the white rooks
+                bishopIndices = torch.where(temp == 3)[0]
+
+                lightSquareBishops = []
+                darkSquareBishops = []
+                for sq in bishopIndices:
+                    rank = sq % 8
+                    file = sq // 8
+                    if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                        lightSquareBishops.append(sq.item())
+                    else:
+                        darkSquareBishops.append(sq.item())
+                # set all but the first two to 0
+
+                #temp[bishopIndices[2:]] = 0
+                if len(lightSquareBishops) > 1:
+                    temp[lightSquareBishops[1:]] = 0
+                if len(darkSquareBishops) > 1:
+                    temp[darkSquareBishops[1:]] = 0
+            elif whiteBishops == 2:
+                bishopIndices = torch.where(temp == 3)[0]
+                lightSquareBishops = []
+                darkSquareBishops = []
+                for sq in bishopIndices:
+                    rank = sq % 8
+                    file = sq // 8
+                    if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                        lightSquareBishops.append(sq.item())
+                    else:
+                        darkSquareBishops.append(sq.item())
+                if len(lightSquareBishops) == 2 or len(darkSquareBishops) == 2:
+                    # set all to 0 except the first one
+                    temp[bishopIndices[1:]] = 0
+
+            blackBishops = torch.sum(temp == -3)
+            if blackBishops > 2:
+                # get the indices of the white rooks
+                bishopIndices = torch.where(temp == -3)[0]
+                lightSquareBishops = []
+                darkSquareBishops = []
+                for sq in bishopIndices:
+                    rank = sq % 8
+                    file = sq // 8
+                    if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                        lightSquareBishops.append(sq.item())
+                    else:
+                        darkSquareBishops.append(sq.item())
+                # set all but the first two to 0
+                #temp[bishopIndices[2:]] = 0
+                if len(lightSquareBishops) > 1:
+                    temp[lightSquareBishops[1:]] = 0
+                if len(darkSquareBishops) > 1:
+                    temp[darkSquareBishops[1:]] = 0
+            elif blackBishops == 2:
+                bishopIndices = torch.where(temp == -3)[0]
+                lightSquareBishops = []
+                darkSquareBishops = []
+                for sq in bishopIndices:
+                    rank = sq % 8
+                    file = sq // 8
+                    if (rank % 2 == 0 and file % 2 == 1) or (rank % 2 == 1 and file % 2 == 0):
+                        lightSquareBishops.append(sq.item())
+                    else:
+                        darkSquareBishops.append(sq.item())
+                if len(lightSquareBishops) == 2 or len(darkSquareBishops) == 2:
+                    # set all to 0 except the first one
+                    temp[bishopIndices[1:]] = 0
+
+            whiteKnights = torch.sum(temp == 2)
+            if whiteKnights > 2:
+                # get the indices of the white rooks
+                knightIndices = torch.where(temp == 2)[0]
+                # set all but the first two to 0
+                temp[knightIndices[2:]] = 0
+            blackKnights = torch.sum(temp == -2)
+            if blackKnights > 2:
+                # get the indices of the white rooks
+                knightIndices = torch.where(temp == -2)[0]
+                # set all but the first two to 0
+                temp[knightIndices[2:]] = 0
+
+            whitePawns = torch.sum(temp == 1)
+            if whitePawns > 8:
+                # get the indices of the white rooks
+                pawnIndices = torch.where(temp == 1)[0]
+                # set all but the first two to 0
+                temp[pawnIndices[8:]] = 0
+            blackPawns = torch.sum(temp == -1)
+            if blackPawns > 8:
+                # get the indices of the white rooks
+                pawnIndices = torch.where(temp == -1)[0]
+                # set all but the first two to 0
+                temp[pawnIndices[8:]] = 0
+            # lets make sure there are no pawns on the first rank
+            temp[0:8] = torch.where(abs(temp[0:8]) == 1, torch.zeros(8), temp[0:8])
+            # lets make sure there are no pawns on the last rank
+            temp[56:64] = torch.where(abs(temp[56:64]) == 1, torch.zeros(8), temp[56:64])
+
+            xN[0,:64] = temp
+            
+            return xN, noised
 
 
 
 class UNet(torch.nn.Module):
-    def __init__(self, n_steps=500, time_emb_dim=100):
+    def __init__(self, n_steps=5000, time_emb_dim=100):
         super(UNet, self).__init__()
         self.actv = torch.nn.SiLU()
 
@@ -133,20 +420,20 @@ class UNet(torch.nn.Module):
         self.inConv = torch.nn.Conv2d(1, 16, 7, padding='same')
         # down layer blocks
         self.te1 = self._make_te(time_emb_dim, 1)
-        self.down1 = self._make_conv_down(16, 32)
-        self.te2 = self._make_te(time_emb_dim, 32)
-        self.down2 = self._make_conv_down(32, 64)
+        self.down1 = self._make_conv_down(16, 64)
+        self.te2 = self._make_te(time_emb_dim, 64)
+        self.down2 = self._make_conv_down(64, 256)
         # bottleneck
-        self.te3 = self._make_te(time_emb_dim, 64)
+        self.te3 = self._make_te(time_emb_dim, 256)
         self.bottleneck = torch.nn.Sequential(
-            torch.nn.Conv2d(64, 64, 3, padding=1),
+            torch.nn.Conv2d(256, 256, 3, padding=1),
             self.actv,
-            torch.nn.Conv2d(64, 64, 3, padding=1)
+            torch.nn.Conv2d(256, 256, 3, padding=1)
         )
         # up layer blocks
-        self.te4 = self._make_te(time_emb_dim, 64)
-        self.up1 = self._make_conv_up(64, 32)
-        self.lateral1 = self._make_conv_only(64, 32)
+        self.te4 = self._make_te(time_emb_dim, 256)
+        self.up1 = self._make_conv_up(256, 64)
+        self.lateral1 = self._make_conv_only(128, 32)
         self.te5 = self._make_te(time_emb_dim, 32)
         self.up2 = self._make_conv_up(32, 1)
 
@@ -209,16 +496,17 @@ class UNet(torch.nn.Module):
 if __name__ == "__main__":
     # for finding non evaluated moves
     neginf = -sys.maxsize - 1
-    epochs = 50
-    loadModel = False
-    modelName = "LateGame.pth"
-    batch_size = 64
+    epochs = 100
+    diffSteps = 200
+    loadModel = True
+    modelName = "ddpmLessNoise.pth"
+    batch_size = 4096
     # number of examples to train with
-    gamesToGrab = 5000
+    gamesToGrab = 50000
     positionsPerGame = 2
 
 
-    df = pd.read_pickle("KaggleData/dataframe.pickle.zip")
+    df = pd.read_pickle("./KaggleData/dataframe.pickle.zip")
 
     gameTensors = list(map(torch.Tensor, df["boards"][0:gamesToGrab]))
     lengths = torch.tensor(list(map(len, gameTensors)))
@@ -227,13 +515,18 @@ if __name__ == "__main__":
         # just add a random position from each game
         game = gameTensors[i]
         numMoves = game.size()[0]
+        if numMoves < 20:
+        	continue
         for j in range(positionsPerGame):
             #moveToSel = np.random.randint(0, numMoves, 1)
-            biggerVal=random.randint(0, (numMoves-1)**4)
-            moveToSel = int(round((biggerVal)**0.25))
+            biggerVal=random.randint(1, (numMoves-1)**2)
+            moveToSel = int(round((biggerVal)**0.5))
             boardPos.append(game[moveToSel, :].squeeze())
+        # for j in range(numMoves - 1):
+        #     boardPos.append(game[j+1, :].squeeze())
 
     N = len(boardPos)
+    print("Training on " + str(N) + " Board Positions")
     # convert board pos to a tensor now
     boardTensors = torch.stack(boardPos)
     trainBoardTensors = boardTensors[0:N-10]
@@ -244,16 +537,17 @@ if __name__ == "__main__":
 
     testBoardTensors = boardTensors[N-10:N]
     testBoardTensors = (testBoardTensors - mean) / std
-    ddpm = DDPM(UNet(), device=device)
+    ddpm = DDPM(UNet(n_steps=diffSteps), device=device, n_steps=diffSteps, mean=mean, std=std)
 
     # optimizer
-    optimizer = torch.optim.Adam(ddpm.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(ddpm.parameters(), lr=5e-4)
 
     trainDS = torch.utils.data.TensorDataset(trainBoardTensors)
     trainDL = torch.utils.data.DataLoader(trainDS, batch_size=batch_size, shuffle=True)
 
     if loadModel:
         ddpm = torch.load(modelName)
+
     else:
 
         # training loop
@@ -283,10 +577,11 @@ if __name__ == "__main__":
     with torch.no_grad():
         print("Generating some boards")
         # start from pure noise for now
-        ts = torch.zeros(10, dtype=torch.long).to(device) + ddpm.n_steps
-        fake = ddpm.createFromNoise(10, ts, writeToGif=False)
+        ts = torch.zeros(10, dtype=torch.long) + ddpm.n_steps
+        fake = ddpm.createFromNoise(10, ts.to(device), writeToGif=True).to('cpu')
         # reverse the z score on the fake
-        fake = fake * std + mean
+        # this is done in createFromNoise now
+        #fake = fake * std + mean
         for i in range(10):
             print("board %d" % i)
             board = fake[i, :]
@@ -296,33 +591,37 @@ if __name__ == "__main__":
             board = decodeBoard(board)
 
             hmm = chess.svg.board(board=board, size=600)
+            hmm = cairosvg.svg2png(bytestring=hmm)
             # write this to a file
-            with open("./GeneratedBoards/boardFromNoise%d.svg" % i, 'w') as f:
+            with open("./GeneratedBoards/boardFromNoise%d.png" % i, 'wb') as f:
                 f.write(hmm)
 
-        # now lets create some new boards from an existing sample
-        for i in range(10):
-            board = testBoardTensors[i:i+1, :]
-            # lets store the starting board as well
-            boardStored = board * std + mean
-            boardStored = torch.round(boardStored, decimals=0)
-            boardStored = decodeBoard(boardStored)
-            hmm = chess.svg.board(board=boardStored, size=600)
-            # write this to a file
-            with open("./GeneratedBoards/boardReal%d.svg" % i, 'w') as f:
-                f.write(hmm)
+        # for i in range(10):
+        #     board = testBoardTensors[i:i+1, :]
+        #     # lets store the starting board as well
+        #     boardStored = board * std + mean
+        #     boardStored = torch.round(boardStored, decimals=0)
+        #     boardStored = decodeBoard(boardStored)
+        #     hmm = chess.svg.board(board=boardStored, size=600)
+        #     hmm = cairosvg.svg2png(bytestring=hmm)
 
-            # make a long 1x1 tensor of 10
-            t = torch.zeros(1, 1, dtype=torch.long).to(device) + 50
-            board = ddpm.createFromReal(board, t)
-            # reverse the z score on the fake
-            board = board * std + mean
-            board = torch.round(board, decimals=0)
-            board = decodeBoard(board)
-            hmm = chess.svg.board(board=board, size=600)
-            # write this to a file
-            with open("./GeneratedBoards/boardFromReal%d.svg" % i, 'w') as f:
-                f.write(hmm)
+        #     # write this to a file
+        #     with open("./GeneratedBoards/boardReal%d.png" % i, 'wb') as f:
+        #         f.write(hmm)
+
+        #     # make a long 1x1 tensor of 10
+        #     t = torch.zeros(1, 1, dtype=torch.long).to('cpu') + 50
+        #     board = ddpm.createFromReal(board, t)
+        #     # reverse the z score on the fake
+        #     board = board * std + mean
+        #     board = torch.round(board, decimals=0)
+        #     board = decodeBoard(board)
+        #     hmm = chess.svg.board(board=board, size=600)
+        #     hmm = cairosvg.svg2png(bytestring=hmm)
+
+        #     # write this to a file
+        #     with open("./GeneratedBoards/boardFromReal%d.png" % i, 'wb') as f:
+        #         f.write(hmm)
 
 
         # ts = torch.zeros(10, dtype=torch.long).to(device)
