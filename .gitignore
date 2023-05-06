@@ -5,3 +5,6 @@ cudaenv/**
 *.json
 *.zip
 *.state
+**.svg
+**.state*
+**.pgn*

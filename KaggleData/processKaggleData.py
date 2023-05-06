@@ -1,6 +1,9 @@
 import chess
 import chess.pgn
 import pickle
+import pandas as pd
+import sys
+import numpy as np
 
 piece_codes = {'P': 1, 'N': 2, 'B': 3, 'R': 4, 'Q': 5, 'K': 6, 'p': -1, 'n': -2, 'b': -3, 'r': -4, 'q': -5, 'k': -6}
 
@@ -55,33 +58,52 @@ def encodeBoard(board):
 	encoding.append(board.fullmove_number)
 	return encoding
 
-games = []
-elos = []
-limit = 50000
-with open("KaggleData/data.pgn") as file:
-	game = chess.pgn.read_game(file)
-
-	
-	while game != None:
-		board = chess.Board()
-		boards = []
-
-		for move in game.mainline_moves():
-			board.push(move)
-			vec = encodeBoard(board)
-			boards.append(vec)
-
-		games.append(boards)
-
-		if len(games) <= 25000:
-			blackElo = int(game.headers["BlackElo"])
-			whiteElo = int(game.headers["WhiteElo"])
-		elos.append([whiteElo, blackElo])
-
-		if len(games) == limit:
-			break
+def readGames():
+	games = []
+	elos = []
+	limit = 50000
+	with open("KaggleData/data.pgn") as file:
 		game = chess.pgn.read_game(file)
 
-with open("KaggleData/encodedGames.pickle", "wb") as file:
-	pickle.dump(games, file)
-	pickle.dump(elos, file)
+		
+		while game != None:
+			board = chess.Board()
+			boards = []
+
+			for move in game.mainline_moves():
+				board.push(move)
+				vec = encodeBoard(board)
+				boards.append(vec)
+
+			games.append(boards)
+
+			if len(games) <= 25000:
+				blackElo = int(game.headers["BlackElo"])
+				whiteElo = int(game.headers["WhiteElo"])
+			elos.append([whiteElo, blackElo])
+
+			if len(games) % 1000 == 0:
+				print(f"Processed {len(games)} games")
+
+			if len(games) == limit:
+				break
+			game = chess.pgn.read_game(file)
+	
+	elos = np.array(elos)
+	return games, elos
+
+def readScores():
+	neginf = -sys.maxsize - 1
+	df = pd.read_csv("KaggleData/stockfish.csv.zip")
+	df["MoveScores"] = [[int(s) if s!= 'NA' else neginf for s in line.split()] for line in df["MoveScores"]]
+
+	return df
+		
+
+games, elos = readGames()
+df = readScores()
+df["boards"] = games
+df["white_elo"] = elos[:,0]
+df["black_elo"] = elos[:,1]
+
+df.to_pickle("KaggleData/dataframe.pickle.zip")

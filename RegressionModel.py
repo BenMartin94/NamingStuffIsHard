@@ -3,10 +3,8 @@ import numpy as np
 import torch
 import torch.nn
 import torch.utils.data
-import sys
 import matplotlib.pyplot as plt
 import matplotlib.patches
-from PolarsData import PolarsDataset, PolarsDataStream
 from KaggleData import loadKaggleData, loadKaggleTestSet
 import pickle
 
@@ -113,32 +111,20 @@ class EloPredictionNet(torch.nn.Module):
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = 'cpu'
 
 # training parameters
 validationPercent = 0.05
 batchSize = 384
-epochs = 50
+epochs = 100
 lr = 1e-4
-trainModel = True
-loadModel = False
+trainModel = False
+loadModel = True
 saveModel = True
 testModel = False
 testExample = False
 
-N = 285920 # BoardFrameSampled
-data = "/Users/bantingl/Documents/LichessData/BoardFrameSampled.parquet"
-LOAD_PATH = "ConvolutionalEloModel_Deep_L1_Dropout_Kaggle.state"
-SAVE_PATH = "ConvolutionalEloModel_Deep_L1_Dropout_Kaggle.state"
-
-# dataset = PolarsDataStream(data, N, batch_size=batchSize)
-# dataloader = torch.utils.data.DataLoader(
-#     dataset, batch_size=None, shuffle=False, num_workers=32, persistent_workers=True, pin_memory=True
-# )
-# validationloader = torch.utils.data.DataLoader(
-#     dataset, batch_size=None, shuffle=False, num_workers=1
-# )
-# dataset.normalizationParams()
+SAVE_PATH = "Checkpoints/ConvolutionalEloModel_Deep_L1_Dropout_Kaggle.state"
+LOAD_PATH = "RegressionModelWeightsFinal.state"
 
 if testExample:
 	net = EloPredictionNet().to(device)
@@ -234,11 +220,18 @@ validationloader = torch.utils.data.DataLoader(
 )
 targetMean = torch.mean(y, dim=0).unsqueeze(0).to(device)
 targetStd = torch.std(y, dim=0).unsqueeze(0).to(device)
+print(targetMean)
+print(targetStd)
+print(len(fullset))
+print(len(dataset))
 
 net = EloPredictionNet().to(device)
 criterion = torch.nn.L1Loss()
 optim = torch.optim.Adam(net.parameters(), lr=lr)
-scheduler = torch.optim.lr_scheduler.StepLR(optim, 1000, 0.5)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+	optim, 
+	verbose=True,
+	factor=0.5)
 bestLoss = float("inf")
 
 if loadModel:
@@ -246,7 +239,7 @@ if loadModel:
     net.load_state_dict(checkpoint["model_state_dict"])
     optim.load_state_dict(checkpoint["optimizer_state_dict"])
     # scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    # bestLoss = checkpoint["best_loss"]
+    bestLoss = checkpoint["best_loss"]
     
 epochLoss = 0.0
 i = 0
@@ -277,32 +270,41 @@ if trainModel:
 			epochLoss = 0.0
 			i += 1
 			
-			scheduler.step()
+		# validate
+		net.eval()
+		validationLoss = 0.0
+		for data, target, lengths in validationloader:
+			data, target = data.to(device), target.to(device)
+			target = (target - targetMean) / targetStd
+		
+			outputs = net.forward(data, lengths)
+			validationLoss += criterion(outputs, target).item()
+		print(f"VALIDATING at epoch: {i} test loss: {validationLoss}")
 
-			# validate
-			if (i+1) % 100 == 0:
-				net.eval()
-				validationLoss = 0.0
-				for data, target, lengths in validationloader:
-					data, target = data.to(device), target.to(device)
-					target = (target - targetMean) / targetStd
-				
-					outputs = net.forward(data, lengths)
-					validationLoss += criterion(outputs, target).item()
-				print(f"VALIDATING at epoch: {i} test loss: {validationLoss}")
-                                
-				if validationLoss < bestLoss:
-					bestLoss = validationLoss
-					if saveModel:
-						torch.save(
-							{
-								"model_state_dict": net.state_dict(),
-								"optimizer_state_dict": optim.state_dict(),
-								"scheduler_state_dict" : scheduler.state_dict(),
-								"best_loss" : bestLoss
-							},
-							SAVE_PATH)
-				net.train()
+		scheduler.step(validationLoss)
+
+		
+		if validationLoss < bestLoss:
+			bestLoss = validationLoss
+			if saveModel:
+				torch.save(
+					{
+						"model_state_dict": net.state_dict(),
+						"optimizer_state_dict": optim.state_dict(),
+						"scheduler_state_dict" : scheduler.state_dict(),
+						"best_loss" : bestLoss
+					},
+					SAVE_PATH)
+		if saveModel:
+			torch.save(
+				{
+					"model_state_dict": net.state_dict(),
+					"optimizer_state_dict": optim.state_dict(),
+					"scheduler_state_dict" : scheduler.state_dict(),
+					"best_loss" : bestLoss
+				},
+				SAVE_PATH + f"{outer:02d}")
+		net.train()
         
 # validate model
 net.eval()
