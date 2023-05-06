@@ -135,12 +135,12 @@ if testExample:
 	lengths = []
 	labels = []
 	files = [
-        "Martin_vs_Martin.pgn.encoded",
-        "Lucas_vs_Martin.pgn.encoded",
-        "BenGame.pgn.encoded",
-        "Ian_Game1.pgn.encoded",
-        "Ian_Game2.pgn.encoded",
-        "Ian_Game3.pgn.encoded"
+        "Games/Martin_vs_Martin.pgn.encoded",
+        "Games/Lucas_vs_Martin.pgn.encoded",
+        "Games/BenGame.pgn.encoded",
+        "Games/Ian_Game1.pgn.encoded",
+        "Games/Ian_Game2.pgn.encoded",
+        "Games/Ian_Game3.pgn.encoded"
 	]
 	for f in files:
 		with open(f, "rb") as file:
@@ -204,7 +204,7 @@ if testModel:
                     "WhiteElo" : white_predict,
                     "BlackElo" : black_predict
                     })
-		df.to_csv("Predictions.csv", index=False)
+		df.to_csv("KaggleData/Predictions.csv", index=False)
 	exit()
 
 

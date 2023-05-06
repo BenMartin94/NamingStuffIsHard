@@ -1,0 +1,4 @@
+*.pgn.encoded filter=lfs diff=lfs merge=lfs -text
+RegressionModelWeightsFinal.state filter=lfs diff=lfs merge=lfs -text
+dataframe.pickle.zip filter=lfs diff=lfs merge=lfs -text
+KaggleData/dataframe.pickle.zip filter=lfs diff=lfs merge=lfs -text
