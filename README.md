@@ -30,3 +30,4 @@ Since the split is random, the holdout set is different each time the model is r
 ## How the model was trained
 
 The model was trained for 100 epochs using a base learning rate of $10^{-4}$, and a `ReduceLROnPlateau` scheduler with a reduction of 0.5 to obtain the results shown in the report.
+The trained model used a 20% dropout rate as well after all ReLU activation functions to help prevent overfitting.
